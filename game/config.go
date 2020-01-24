@@ -17,7 +17,7 @@ const (
 
 type DraftRegularOptions struct {
 	TotalPacks    int            `json:"totalPacks"`
-	SelectedPacks map[int]string `json:"selectedPacks"`
+	SelectedPacks map[string]string `json:"selectedPacks"`
 }
 
 type DraftCubeOptions struct {
@@ -34,7 +34,7 @@ type DraftChaosOptions struct {
 
 type SealedRegularOptions struct {
 	TotalPacks	int `json:"totalPacks"`
-	SelectedPacks	map[int]string `json:"selectedPacks"`
+	SelectedPacks	map[string]string `json:"selectedPacks"`
 }
 
 type SealedCubeOptions struct {
@@ -49,20 +49,20 @@ type SealedChaosOptions struct {
 }
 
 type DraftOptions struct {
-	Regular DraftRegularOptions
-	Cube DraftCubeOptions
-	Chaos DraftChaosOptions
+	Regular DraftRegularOptions `json:"1"`
+	Cube DraftCubeOptions `json:"2"`
+	Chaos DraftChaosOptions `json:"3"`
 }
 
 type SealedOptions struct {
-	Regular SealedRegularOptions
-	Cube SealedCubeOptions
-	Chaos SealedChaosOptions
+	Regular SealedRegularOptions `json:"1"`
+	Cube SealedCubeOptions `json:"2"`
+	Chaos SealedChaosOptions `json:"3"`
 }
 
 type ModeMap struct {
-	draft map[Mode]DraftOptions
-	sealed map[Mode]SealedOptions
+	Draft  DraftOptions  `json:"1"`
+	Sealed SealedOptions `json:"2"`
 }
 
 type GeneralOptions struct {
@@ -71,5 +71,5 @@ type GeneralOptions struct {
 	PrivateGame bool `json:"privateGame"`
 	Mode Mode `json:"gameMode"`
 	Type Type `json:"gameType"`
-	GameOptions map[Type]ModeMap `json:"gameOptions"`
+	GameOptions ModeMap `json:"options"`
 }

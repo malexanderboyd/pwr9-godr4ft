@@ -20,6 +20,7 @@ const (
 	NewPlayer   GameMessageType = "new_player"
 	ChatMessage GameMessageType = "chat_message"
 	HostChange  GameMessageType = "host_change"
+	GameStart 	GameMessageType = "start_game"
 )
 
 type GameMessage struct {
@@ -31,6 +32,8 @@ type GameDirector struct {
 	clients  []*websocket.Conn
 	host     *websocket.Conn
 	options game.GeneralOptions
+	gameStarted bool
+	clientsContents  map[string][]string
 }
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
@@ -88,11 +91,43 @@ func (director *GameDirector) handleClient(newConnection *websocket.Conn) {
 			case ChatMessage:
 				director.announce(msg)
 				break
+			case GameStart:
+				if !director.gameStarted {
+					fmt.Println("Starting Game!")
+					director.announce(msg)
+					go director.startGame()
+				}
+				break
 			default:
 				break
 			}
 		}
 
+	}
+}
+
+func (director *GameDirector) startGame() {
+	director.gameStarted = true
+	switch director.options.Type {
+	case game.DRAFT:
+		switch director.options.Mode {
+		case game.CHAOS:
+			break
+		case game.CUBE:
+			break
+		case game.REGULAR:
+			opts := director.options.GameOptions.Draft.Regular
+			fmt.Println(opts)
+			break
+		default:
+			panic(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
+		}
+		break
+	case game.SEALED:
+		break
+	default:
+		panic(fmt.Sprintf("Unknown game type: %d", director.options.Type))
+		break
 	}
 }
 
@@ -152,6 +187,19 @@ func (director *GameDirector) removeClient(closedConnection *websocket.Conn) {
 	})
 }
 
+func (director *GameDirector) getGameResources() {
+	res, err := http.Get(fmt.Sprintf("http://localhost:8000/sets"))
+	if err != nil {
+		log.Fatalln("Cannot get game options!", err)
+	}
+	jsonData, err := json.MarshalIndent(res.Body, "", "    ")
+	if err != nil {
+		panic(err)
+	}
+	log.Fatalln("Cannot get game options!", jsonData)
+
+}
+
 // We'll need to define an Upgrader
 // this will require a Read and Write buffer size
 var upgrader = websocket.Upgrader{
@@ -179,14 +227,25 @@ func main() {
 	var GameOptions game.GeneralOptions
 	res, err := http.Get(fmt.Sprintf("http://localhost:8000/game/%s", *gameId))
 	if err != nil {
-		log.Fatalln("Cannot get game options!")
+		log.Fatalln("Cannot get game options!", err)
 	}
+
+	defer res.Body.Close()
+
+	//body, err := ioutil.ReadAll(res.Body)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//
+	//fmt.Println(string(body))
 
 	if err := json.NewDecoder(res.Body).Decode(&GameOptions); err != nil {
 		log.Fatalln(err)
 	}
 
-	director := GameDirector{options: GameOptions}
+	director := GameDirector{options: GameOptions, gameStarted: false}
+
+	go director.getGameResources()
 
 	setupRoutes(director)
 	fmt.Println("Game ", *gameId, ": Starting socket server on", *port)
