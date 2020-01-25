@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"io/ioutil"
 	"log"
 	"main/game"
 	"net/http"
@@ -20,7 +21,8 @@ const (
 	NewPlayer   GameMessageType = "new_player"
 	ChatMessage GameMessageType = "chat_message"
 	HostChange  GameMessageType = "host_change"
-	GameStart 	GameMessageType = "start_game"
+	GameStart   GameMessageType = "start_game"
+	DeckContent GameMessageType = "deck_content"
 )
 
 type GameMessage struct {
@@ -34,6 +36,7 @@ type GameDirector struct {
 	options game.GeneralOptions
 	gameStarted bool
 	clientsContents  map[string][]string
+	packs map[string]SetPacks
 }
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
@@ -116,8 +119,12 @@ func (director *GameDirector) startGame() {
 		case game.CUBE:
 			break
 		case game.REGULAR:
-			opts := director.options.GameOptions.Draft.Regular
-			fmt.Println(opts)
+			emp, _ := json.Marshal(director.packs)
+			director.announce(GameMessage{
+				Type: DeckContent,
+				Data: string(emp),
+			})
+
 			break
 		default:
 			panic(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
@@ -187,16 +194,50 @@ func (director *GameDirector) removeClient(closedConnection *websocket.Conn) {
 	})
 }
 
+type SetPacks struct {
+	Packs [][]string `json:"packs"`
+}
+
 func (director *GameDirector) getGameResources() {
-	res, err := http.Get(fmt.Sprintf("http://localhost:8000/sets"))
-	if err != nil {
-		log.Fatalln("Cannot get game options!", err)
+	switch director.options.Type {
+	case game.DRAFT:
+		switch director.options.Mode {
+		case game.CHAOS:
+			break
+		case game.CUBE:
+			break
+		case game.REGULAR:
+			opts := director.options.GameOptions.Draft.Regular
+			var packs = make(map[string]SetPacks)
+			for i := 0; i < opts.TotalPacks; i++ {
+				setAbbrev := opts.SelectedPacks[strconv.Itoa(i)]
+				res, err := http.Get(fmt.Sprintf("http://localhost:8000/set/%s/pack?n=3", setAbbrev))
+				if err != nil {
+					log.Fatalln("Cannot get game options!", err)
+				}
+				var boosters SetPacks
+				msg, err := ioutil.ReadAll(res.Body)
+				if err != nil {
+					panic(err)
+				}
+
+				if err := json.Unmarshal(msg, &boosters); err != nil {
+					panic(err)
+				}
+				packs[setAbbrev] = boosters
+			}
+			director.packs = packs
+			break
+		default:
+			panic(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
+		}
+		break
+	case game.SEALED:
+		break
+	default:
+		panic(fmt.Sprintf("Unknown game type: %d", director.options.Type))
+		break
 	}
-	jsonData, err := json.MarshalIndent(res.Body, "", "    ")
-	if err != nil {
-		panic(err)
-	}
-	log.Fatalln("Cannot get game options!", jsonData)
 
 }
 
@@ -232,20 +273,13 @@ func main() {
 
 	defer res.Body.Close()
 
-	//body, err := ioutil.ReadAll(res.Body)
-	//if err != nil {
-	//	panic(err)
-	//}
-	//
-	//fmt.Println(string(body))
-
 	if err := json.NewDecoder(res.Body).Decode(&GameOptions); err != nil {
 		log.Fatalln(err)
 	}
 
 	director := GameDirector{options: GameOptions, gameStarted: false}
 
-	go director.getGameResources()
+	director.getGameResources()
 
 	setupRoutes(director)
 	fmt.Println("Game ", *gameId, ": Starting socket server on", *port)
