@@ -10,13 +10,13 @@ import (
 	"main/game"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 	"time"
 )
 
 type GameMessageType string
 
+const NO_HOST_SENTINEL = -999
 const (
 	NewPlayer   GameMessageType = "new_player"
 	ChatMessage GameMessageType = "chat_message"
@@ -25,87 +25,129 @@ const (
 	DeckContent GameMessageType = "deck_content"
 )
 
-type GameMessage struct {
+type Message struct {
 	Type GameMessageType `json:"type"`
 	Data string          `json:"data"`
 }
 
 type GameDirector struct {
-	clients  []*websocket.Conn
-	host     *websocket.Conn
-	options game.GeneralOptions
+	clientsContents map[string][]string
+	packs           map[string]SetPacks
+	//
+	port        int
+	gameId      string
+	options     game.GeneralOptions
 	gameStarted bool
-	clientsContents  map[string][]string
-	packs map[string]SetPacks
+	host        int
+	Clients     map[int]*Client
+	messages    []*Message
+	addClientCh chan *Client
+	delClientCh chan *Client
+	sendAllCh   chan *Message
+	doneCh      chan bool
+	errCh       chan error
+}
+
+func NewGameDirector(options game.GeneralOptions, port int, gameId string) *GameDirector {
+	return &GameDirector{
+		clientsContents: nil,
+		packs:           nil,
+		port:            port,
+		gameId:          gameId,
+		options:         nil,
+		gameStarted:     false,
+		host:            NO_HOST_SENTINEL,
+		Clients:         make(map[int]*Client),
+		messages:        []*Message{},
+		addClientCh:     make(chan *Client),
+		delClientCh:     make(chan *Client),
+		sendAllCh:       make(chan *Message),
+		doneCh:          make(chan bool),
+		errCh:           make(chan error),
+	}
+}
+
+func (director *GameDirector) addNewClient(c *Client) {
+	director.addClientCh <- c
+}
+
+func (director *GameDirector) deleteClient(c *Client) {
+	director.delClientCh <- c
+}
+
+func (director *GameDirector) shutdown(c *Client) {
+	director.doneCh <- true
+}
+
+func (director *GameDirector) Error(err error) {
+	director.errCh <- err
+}
+
+func (director *GameDirector) sendPastMessages(c *Client) {
+	for _, msg := range director.messages {
+		c.Write(msg)
+	}
+}
+
+func (director *GameDirector) SendAll(msg *Message) {
+	director.sendAllCh <- msg
+}
+
+func (director *GameDirector) sendAll(msg *Message) {
+	for _, c := range director.Clients {
+		c.Write(msg)
+	}
+}
+
+func (director *GameDirector) sendHostMessage(msg *Message) {
+	host := director.Clients[director.host]
+	if host != nil {
+		host.Write(msg)
+	}
 }
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
-	// upgrade this connection to a WebSocket
-	newConnection, err := upgrader.Upgrade(w, r, nil)
+	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
+		_, _ = fmt.Fprintf(w, err.Error())
 	}
-	director.clients = append(director.clients, newConnection)
 
-	if len(director.clients) == 1 {
+	defer func(ws *websocket.Conn) {
+		err := ws.Close()
+		if err != nil {
+			director.errCh <- err
+		}
+	}(ws)
+
+	client, err := NewClient(ws, director)
+	if err != nil {
+		if err = ws.Close(); err != nil {
+			log.Println(err)
+			_, _ = fmt.Fprintf(w, err.Error())
+		}
+	}
+	director.addNewClient(client)
+	if director.host == NO_HOST_SENTINEL {
 		director.promoteNewHost()
 	}
-
-	go director.handleClient(newConnection)
-	director.announce(GameMessage{
-		Type: NewPlayer,
-		Data: strconv.Itoa(len(director.clients)),
-	})
+	client.Listen()
 }
 
-func (director *GameDirector) announce(message GameMessage) {
-	for _, client := range director.clients {
-		err := client.WriteJSON(message)
-		if err != nil {
-			panic(err)
+func (director *GameDirector) handleClientMessage(msg *Message) {
+	switch msg.Type {
+	case ChatMessage:
+		director.SendAll(msg)
+		break
+	case GameStart:
+		if !director.gameStarted {
+			fmt.Println("Starting Game!")
+			director.SendAll(msg)
+			go director.startGame()
 		}
-	}
-}
-
-func (director *GameDirector) announceToHost(message GameMessage) {
-	if err := director.host.WriteJSON(message); err != nil {
-		panic(err)
-	}
-}
-
-func (director *GameDirector) handleClient(newConnection *websocket.Conn) {
-	for {
-		if msg_type, msgContent, err := newConnection.ReadMessage(); err != nil {
-			err := newConnection.Close()
-			if err != nil {
-				panic(err)
-			}
-			director.removeClient(newConnection)
-			break
-		} else {
-			fmt.Println(msg_type)
-
-			var msg GameMessage
-			if err := json.Unmarshal(msgContent, &msg); err != nil {
-				panic(err)
-			}
-			fmt.Println(msg)
-			switch msg.Type {
-			case ChatMessage:
-				director.announce(msg)
-				break
-			case GameStart:
-				if !director.gameStarted {
-					fmt.Println("Starting Game!")
-					director.announce(msg)
-					go director.startGame()
-				}
-				break
-			default:
-				break
-			}
-		}
-
+		break
+	default:
+		break
 	}
 }
 
@@ -120,7 +162,7 @@ func (director *GameDirector) startGame() {
 			break
 		case game.REGULAR:
 			emp, _ := json.Marshal(director.packs)
-			director.announce(GameMessage{
+			director.SendAll(&Message{
 				Type: DeckContent,
 				Data: string(emp),
 			})
@@ -134,7 +176,6 @@ func (director *GameDirector) startGame() {
 		break
 	default:
 		panic(fmt.Sprintf("Unknown game type: %d", director.options.Type))
-		break
 	}
 }
 
@@ -146,7 +187,7 @@ func (director *GameDirector) pause() {
 		select {
 		case <-ticker.C:
 			ticks += 1
-			if director.host != nil {
+			if director.host != NO_HOST_SENTINEL {
 				fmt.Println("NEW HOST! *UNPAUSING*.")
 				ticker.Stop()
 				break
@@ -160,38 +201,16 @@ func (director *GameDirector) pause() {
 }
 
 func (director *GameDirector) promoteNewHost() {
-	if len(director.clients) >= 1 {
-		director.host = director.clients[0]
-		director.announceToHost(GameMessage{
+	if len(director.Clients) >= 1 {
+		director.host = director.Clients[0].id
+		director.sendHostMessage(&Message{
 			Type: HostChange,
 			Data: strconv.Itoa(1),
 		})
+	} else {
+		director.host = NO_HOST_SENTINEL
+		director.pause()
 	}
-}
-
-func (director *GameDirector) checkSwapHost(closedConn *websocket.Conn) {
-	if reflect.DeepEqual(director.host, closedConn) {
-		if len(director.clients) == 0 {
-			director.host = nil
-			go director.pause()
-		} else {
-			director.promoteNewHost()
-		}
-	}
-}
-
-func (director *GameDirector) removeClient(closedConnection *websocket.Conn) {
-	for i, client := range director.clients {
-		if reflect.DeepEqual(client, closedConnection) {
-			director.clients = append(director.clients[:i], director.clients[i+1:]...)
-			go director.checkSwapHost(closedConnection)
-			break
-		}
-	}
-	director.announce(GameMessage{
-		Type: NewPlayer,
-		Data: strconv.Itoa(len(director.clients)),
-	})
 }
 
 type SetPacks struct {
@@ -251,16 +270,50 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func homePage(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Home Page")
-}
+func (director *GameDirector) Listen() {
+	log.Println(fmt.Sprintf("[Game %s] Listening on port %d", director.gameId, director.port))
+	// upgrade this connection to a WebSocket
 
-func setupRoutes(director GameDirector) {
-	http.HandleFunc("/", homePage)
 	http.HandleFunc("/ws", director.newClient)
+	log.Println("Created /ws handler")
+
+	for {
+		select {
+		case c := <-director.addClientCh:
+			log.Println("Added new client")
+			director.Clients[c.id] = c
+			log.Println("Total Connected", len(director.Clients))
+			director.SendAll(&Message{
+				Type: NewPlayer,
+				Data: strconv.Itoa(len(director.Clients)),
+			})
+			director.sendPastMessages(c)
+		case c := <-director.delClientCh:
+			log.Println("Removing client: ", c.id)
+			delete(director.Clients, c.id)
+			if c.id == director.host {
+				director.promoteNewHost()
+			}
+			director.SendAll(&Message{
+				Type: NewPlayer,
+				Data: strconv.Itoa(len(director.Clients)),
+			})
+		case msg := <-director.sendAllCh:
+			log.Println("Sending to all clients: ", msg)
+			director.messages = append(director.messages, msg)
+			director.sendAll(msg)
+		case err := <-director.errCh:
+			log.Println("Error: ", err.Error())
+		case <-director.doneCh:
+			return
+		}
+	}
+
 }
 
 func main() {
+	log.SetFlags(log.Lshortfile)
+
 	port := flag.Int("port", 8000, "the port the server will open a socket server on")
 	gameId := flag.String("gameId", "", "Four byte url safe hex string")
 	flag.Parse()
@@ -277,11 +330,12 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	director := GameDirector{options: GameOptions, gameStarted: false}
+	director := NewGameDirector(GameOptions, *port, *gameId)
 
 	director.getGameResources()
 
-	setupRoutes(director)
-	fmt.Println("Game ", *gameId, ": Starting socket server on", *port)
+	go director.Listen()
+
+	http.Handle("/", http.FileServer(http.Dir("webroot")))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
