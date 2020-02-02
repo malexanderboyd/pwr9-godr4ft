@@ -10,7 +10,7 @@ import (
 
 const channelBufSize = 100
 
-var maxId int = 0
+var maxId int = -1
 
 type Client struct {
 	id int
@@ -52,7 +52,7 @@ func (c *Client) Listen() {
 }
 
 func(c *Client) listenRead() {
-	log.Println("Listening read from client", c.id)
+	log.Println(fmt.Sprintf("[Client: %d] listening to read:", c.id))
 	for {
 		select {
 			case <- c.doneCh:
@@ -68,7 +68,9 @@ func(c *Client) listenRead() {
 				}
 				fmt.Println(messageType)
 				if err := json.Unmarshal(msgContent, &msg); err != nil {
-					panic(err)
+					c.director.deleteClient(c)
+					c.doneCh <- true
+					c.director.errCh <- err
 				}
 				c.director.handleClientMessage(&msg)
 		}
@@ -77,14 +79,16 @@ func(c *Client) listenRead() {
 
 
 func(c *Client)  listenWrite() {
-	log.Println("Listening write to client", c.id)
+	log.Println(fmt.Sprintf("[Client: %d] Listening to write", c.id))
 	for {
 		select {
 			case msg := <-c.ch:
-				log.Println("Send:", msg)
+				log.Println(fmt.Sprintf("[Client: %d] Send:", c.id), msg)
 				err := c.ws.WriteJSON(msg)
 				if err != nil {
-					panic(err)
+					c.director.deleteClient(c)
+					c.doneCh <- true
+					c.director.errCh <- err
 				}
 			case <-c.doneCh:
 				c.director.deleteClient(c)

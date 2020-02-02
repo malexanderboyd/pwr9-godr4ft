@@ -54,7 +54,7 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		packs:           nil,
 		port:            port,
 		gameId:          gameId,
-		options:         nil,
+		options:         options,
 		gameStarted:     false,
 		host:            NO_HOST_SENTINEL,
 		Clients:         make(map[int]*Client),
@@ -113,13 +113,6 @@ func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) 
 		_, _ = fmt.Fprintf(w, err.Error())
 	}
 
-	defer func(ws *websocket.Conn) {
-		err := ws.Close()
-		if err != nil {
-			director.errCh <- err
-		}
-	}(ws)
-
 	client, err := NewClient(ws, director)
 	if err != nil {
 		if err = ws.Close(); err != nil {
@@ -127,11 +120,15 @@ func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) 
 			_, _ = fmt.Fprintf(w, err.Error())
 		}
 	}
-	director.addNewClient(client)
 	if director.host == NO_HOST_SENTINEL {
-		director.promoteNewHost()
+		director.host = client.id
+		client.Write(&Message{
+			Type: HostChange,
+			Data: strconv.Itoa(1),
+		})
 	}
-	client.Listen()
+	director.addNewClient(client)
+	go client.Listen()
 }
 
 func (director *GameDirector) handleClientMessage(msg *Message) {
@@ -200,16 +197,17 @@ func (director *GameDirector) pause() {
 	}
 }
 
+
 func (director *GameDirector) promoteNewHost() {
-	if len(director.Clients) >= 1 {
-		director.host = director.Clients[0].id
+	nextHostId, err := getRandomClientId(director.Clients)
+	if err != nil {
+		director.host = NO_HOST_SENTINEL
+	} else {
+		director.host = nextHostId
 		director.sendHostMessage(&Message{
 			Type: HostChange,
 			Data: strconv.Itoa(1),
 		})
-	} else {
-		director.host = NO_HOST_SENTINEL
-		director.pause()
 	}
 }
 
@@ -283,21 +281,28 @@ func (director *GameDirector) Listen() {
 			log.Println("Added new client")
 			director.Clients[c.id] = c
 			log.Println("Total Connected", len(director.Clients))
-			director.SendAll(&Message{
+			go director.sendAll(&Message{
 				Type: NewPlayer,
 				Data: strconv.Itoa(len(director.Clients)),
 			})
-			director.sendPastMessages(c)
+			go director.sendPastMessages(c)
 		case c := <-director.delClientCh:
-			log.Println("Removing client: ", c.id)
-			delete(director.Clients, c.id)
-			if c.id == director.host {
-				director.promoteNewHost()
+
+			clientID := c.id
+			log.Println("Removing client: ", clientID)
+			delete(director.Clients, clientID)
+
+			if len(director.Clients) == 0 {
+				director.pause()
+			} else {
+				if clientID == director.host {
+					director.promoteNewHost()
+				}
+				go director.SendAll(&Message{
+					Type: NewPlayer,
+					Data: strconv.Itoa(len(director.Clients)),
+				})
 			}
-			director.SendAll(&Message{
-				Type: NewPlayer,
-				Data: strconv.Itoa(len(director.Clients)),
-			})
 		case msg := <-director.sendAllCh:
 			log.Println("Sending to all clients: ", msg)
 			director.messages = append(director.messages, msg)
@@ -308,6 +313,8 @@ func (director *GameDirector) Listen() {
 			return
 		}
 	}
+
+	log.Println("Exiting")
 
 }
 
