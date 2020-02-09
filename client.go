@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
-	"log"
 )
 
 const channelBufSize = 100
@@ -20,7 +19,7 @@ type Client struct {
 	ch chan*Message
 	doneCh chan bool
 
-	packs *list.List
+	pool *list.List
 }
 
 func NewClient(ws *websocket.Conn, director *GameDirector) (*Client, error) {
@@ -55,7 +54,8 @@ func (c *Client) Listen() {
 }
 
 func(c *Client) listenRead() {
-	log.Println(fmt.Sprintf("[Client: %d] listening to read:", c.id))
+	logger := GetLogger()
+	logger.Infow("listening to read", "client", c.id)
 	for {
 		select {
 			case <- c.doneCh:
@@ -65,11 +65,10 @@ func(c *Client) listenRead() {
 
 			default:
 				var msg Message
-				messageType, msgContent, err := c.ws.ReadMessage()
+				_, msgContent, err := c.ws.ReadMessage()
 				if err != nil {
 					c.director.Error(err)
 				}
-				fmt.Println(messageType)
 				if err := json.Unmarshal(msgContent, &msg); err != nil {
 					c.director.deleteClient(c)
 					c.doneCh <- true
@@ -82,11 +81,12 @@ func(c *Client) listenRead() {
 
 
 func(c *Client)  listenWrite() {
-	log.Println(fmt.Sprintf("[Client: %d] Listening to write", c.id))
+	logger := GetLogger()
+	logger.Debugw("listening to write", "client", c.id)
 	for {
 		select {
 			case msg := <-c.ch:
-				log.Println(fmt.Sprintf("[Client: %d] Send:", c.id), msg)
+				logger.Debugw("send", "client", c.id, "msg", msg)
 				err := c.ws.WriteJSON(msg)
 				if err != nil {
 					c.director.deleteClient(c)
