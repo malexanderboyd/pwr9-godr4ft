@@ -1,7 +1,6 @@
 package main
 
 import (
-	"container/list"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,7 @@ type Client struct {
 	ch chan*Message
 	doneCh chan bool
 
-	pool *list.List
+	pool []SetCard
 }
 
 func NewClient(ws *websocket.Conn, director *GameDirector) (*Client, error) {
@@ -35,7 +34,7 @@ func NewClient(ws *websocket.Conn, director *GameDirector) (*Client, error) {
 	ch := make(chan *Message, channelBufSize)
 	doneCh := make(chan bool)
 
-	return &Client{maxId, ws, director, ch, doneCh, list.New()}, nil
+	return &Client{maxId, ws, director, ch, doneCh, nil}, nil
 }
 
 func (c *Client) Write(msg *Message) {

@@ -24,6 +24,7 @@ const (
 	HostChange  GameMessageType = "host_change"
 	GameStart   GameMessageType = "start_game"
 	DeckContent GameMessageType = "deck_content"
+	PoolContent	GameMessageType = "pool_content"
 	ChooseCard  GameMessageType = "choose_card"
 )
 
@@ -35,6 +36,14 @@ type Message struct {
 type DraftRound struct {
 	SetAbbreviation string
 	PlayerPacks     map[int][]SetCard
+}
+
+type DraftPool struct {
+	Cards []SetCard `json:"cards"`
+}
+
+func (dr *DraftRound) getPlayerPacksBySeat(playerSeatNumber int) []SetCard {
+	return dr.PlayerPacks[playerSeatNumber]
 }
 
 type GameDirector struct {
@@ -50,6 +59,7 @@ type GameDirector struct {
 	roundTimerType    string
 	roundPacks        map[int]DraftRound
 	roundPicksTimerCh chan int
+	nextRoundPacks	  map[int][]SetCard
 	totalPacks        int
 	host              int
 	Clients           map[int]*Client
@@ -58,6 +68,7 @@ type GameDirector struct {
 	addClientCh       chan *Client
 	delClientCh       chan *Client
 	sendAllCh         chan *Message
+	startNextRoundCh  chan bool
 	doneCh            chan bool
 	errCh             chan error
 }
@@ -76,6 +87,7 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		round:             0,
 		roundPicksTimerCh: nil,
 		Seats:             make(map[int]int),
+		nextRoundPacks:	   make(map[int][]SetCard),
 		totalPacks:        0,
 		host:              NO_HOST_SENTINEL,
 		Clients:           make(map[int]*Client),
@@ -83,6 +95,7 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		addClientCh:       make(chan *Client),
 		delClientCh:       make(chan *Client),
 		sendAllCh:         make(chan *Message),
+		startNextRoundCh:  make(chan bool),
 		doneCh:            make(chan bool),
 		errCh:             make(chan error),
 	}
@@ -186,6 +199,23 @@ func (director *GameDirector) handleClientMessage(clientID int, msg *Message) {
 	}
 }
 
+func (director *GameDirector) getClientBySeat(seat int) *Client {
+	nextClientID := director.Seats[seat]
+	if client, ok := director.Clients[nextClientID]; ok {
+		return client
+	}
+	return nil
+}
+
+func (director *GameDirector) getSeatByClientId(clientId int) int {
+	return director.Seats[clientId]
+}
+
+func (director *GameDirector) getPackByClientID(clientId int) []SetCard {
+	playerSeat := director.getSeatByClientId(clientId)
+	return director.roundPacks[director.packNumber].PlayerPacks[playerSeat]
+}
+
 func (director *GameDirector) handleClientChooseCard(clientID int, msg *Message) error {
 	rawMsgContents := msg.Data
 	client := director.Clients[clientID]
@@ -202,19 +232,22 @@ func (director *GameDirector) handleClientChooseCard(clientID int, msg *Message)
 			director.Error(err)
 		}
 
-		playerSeat := director.Seats[client.id]
-		currentPack := director.roundPacks[director.packNumber].PlayerPacks[playerSeat]
+		currentPack := director.getPackByClientID(client.id)
+		if currentPack == nil {
+			return errors.New(fmt.Sprintf("client %d already chose this round, resent chose_card msg", client.id))
+		}
 
 		if selectedCardMsg.PickedCardIndex >= len(currentPack) || selectedCardMsg.PickedCardIndex < 0 {
 			return errors.New(fmt.Sprintf("[client %d] chose an invalid card index %d", clientID, selectedCardMsg.PickedCardIndex))
 		}
 
 		chosenCard := currentPack[selectedCardMsg.PickedCardIndex]
+		client.pool = append(client.pool, chosenCard)
 
 		currentPack = append(currentPack[:selectedCardMsg.PickedCardIndex], currentPack[selectedCardMsg.PickedCardIndex+1:]...)
 
-		client.pool.PushBack(chosenCard)
 
+		playerSeat := director.getSeatByClientId(client.id)
 		var nextClientSeat int
 		if director.packNumber%2 == 0 {
 			// rounds go left, right, left ...
@@ -224,18 +257,31 @@ func (director *GameDirector) handleClientChooseCard(clientID int, msg *Message)
 				nextClientSeat = playerSeat + 1
 			}
 		} else {
-			if playerSeat-1 <= 0 {
+			if playerSeat-1 < 0 {
 				nextClientSeat = len(director.Seats) - 1
 			} else {
 				nextClientSeat = playerSeat - 1
 			}
 		}
+		director.nextRoundPacks[nextClientSeat] = currentPack
+		director.roundPacks[director.packNumber].PlayerPacks[playerSeat] = nil
 
 		director.roundPicksTimerCh <- 1
-		director.roundPacks[director.packNumber].PlayerPacks[nextClientSeat] = currentPack
-
+		director.sendClientPool(client)
 	}
 	return nil
+}
+
+func (director *GameDirector) sendClientPool(client *Client) {
+	jsonData, err := json.Marshal(client.pool)
+	if err != nil {
+		director.Error(err)
+	} else {
+		client.Write(&Message{
+			Type: PoolContent,
+			Data: string(jsonData),
+		})
+	}
 }
 
 func (director *GameDirector) startGame() {
@@ -285,34 +331,20 @@ func (director *GameDirector) startGame() {
 	}
 }
 
-func (director *GameDirector) startNextPack() {
-	logger := GetLogger()
-	director.round = 0
-	director.packNumber += 1
-	if _, ok := director.roundPacks[director.packNumber]; !ok {
-		logger.Infow("END OF GAME!")
-		os.Exit(0)
+func (director *GameDirector) IsEndOfDraft() bool {
+	if _, ok := director.roundPacks[director.packNumber + 1]; !ok {
+		return true
 	}
+	return false
+}
+func (director *GameDirector) startNextPack()  {
+	director.packNumber += 1
+	director.round = 0
 }
 
 func (director *GameDirector) startNextRound() {
 	director.round += 1
 	CurrentPackRound := director.roundPacks[director.packNumber]
-	// TODO Fix this to properly roundrobin
-	var totalEmptys = 0
-	for _, pack := range CurrentPackRound.PlayerPacks {
-		if len(pack) == 0 {
-			totalEmptys += 1
-		} else {
-			break
-		}
-
-	}
-	if totalEmptys == len(director.Seats) {
-		director.startNextPack()
-		CurrentPackRound = director.roundPacks[director.packNumber]
-	}
-
 	for i, client := range director.Clients {
 
 		if i >= len(CurrentPackRound.PlayerPacks) {
@@ -341,6 +373,7 @@ func (director *GameDirector) startNextRound() {
 
 func (director *GameDirector) startRoundPicksTimer() chan int {
 	var roundTime time.Duration
+	logger := GetLogger()
 	switch director.roundTimerType {
 	case "leisurely":
 		//'Leisurely - Starts @ 90s and decrements by 5s per pick'
@@ -367,7 +400,6 @@ func (director *GameDirector) startRoundPicksTimer() chan int {
 	ticks := 0
 	ticker := time.NewTicker(1 * time.Second)
 	pickIncrease := make(chan int, len(director.Seats))
-	logger := GetLogger()
 	go func() {
 		var picks = 0
 		for {
@@ -376,13 +408,12 @@ func (director *GameDirector) startRoundPicksTimer() chan int {
 				ticks += 1
 				if time.Duration(ticks)*time.Second == roundTime {
 					logger.Infow("Times Up! Forcing autopicks and ending round", "round", director.round)
-					go director.startNextRound()
+					director.startNextRoundCh <- true
 					ticker.Stop()
 					break
 				}
 				if picks == len(director.Seats) {
-					logger.Infow("Everyone has picked, skipping to next round")
-					go director.startNextRound()
+					director.startNextRoundCh <- true
 					ticker.Stop()
 					break
 				}
@@ -395,6 +426,26 @@ func (director *GameDirector) startRoundPicksTimer() chan int {
 
 	return pickIncrease
 }
+
+func (director *GameDirector) rotateCards() {
+	for key, pack := range director.nextRoundPacks {
+		director.roundPacks[director.packNumber].PlayerPacks[key] = pack
+	}
+}
+
+func (director *GameDirector) shouldStartNewPack() bool {
+	var totalEmptyPacks = 0
+	for _, pack := range director.nextRoundPacks {
+		if len(pack) == 0 {
+			totalEmptyPacks += 1
+		}
+	}
+	if totalEmptyPacks == len(director.Seats) {
+		return true
+	}
+	return false
+}
+
 
 func (director *GameDirector) pause() {
 	logger := GetLogger()
@@ -431,101 +482,9 @@ func (director *GameDirector) promoteNewHost() {
 	}
 }
 
-type SetCard struct {
-	Object        string `json:"object"`
-	ID            string `json:"id"`
-	OracleID      string `json:"oracle_id"`
-	MultiverseIds []int  `json:"multiverse_ids"`
-	MtgoID        int    `json:"mtgo_id"`
-	ArenaID       int    `json:"arena_id"`
-	TcgplayerID   int    `json:"tcgplayer_id"`
-	Name          string `json:"name"`
-	Lang          string `json:"lang"`
-	ReleasedAt    string `json:"released_at"`
-	URI           string `json:"uri"`
-	ScryfallURI   string `json:"scryfall_uri"`
-	Layout        string `json:"layout"`
-	HighresImage  bool   `json:"highres_image"`
-	ImageUris     struct {
-		Small      string `json:"small"`
-		Normal     string `json:"normal"`
-		Large      string `json:"large"`
-		Png        string `json:"png"`
-		ArtCrop    string `json:"art_crop"`
-		BorderCrop string `json:"border_crop"`
-	} `json:"image_uris"`
-	ManaCost      string   `json:"mana_cost"`
-	Cmc           float64  `json:"cmc"`
-	TypeLine      string   `json:"type_line"`
-	OracleText    string   `json:"oracle_text"`
-	Power         string   `json:"power"`
-	Toughness     string   `json:"toughness"`
-	Colors        []string `json:"colors"`
-	ColorIdentity []string `json:"color_identity"`
-	Legalities    struct {
-		Standard  string `json:"standard"`
-		Future    string `json:"future"`
-		Historic  string `json:"historic"`
-		Pioneer   string `json:"pioneer"`
-		Modern    string `json:"modern"`
-		Legacy    string `json:"legacy"`
-		Pauper    string `json:"pauper"`
-		Vintage   string `json:"vintage"`
-		Penny     string `json:"penny"`
-		Commander string `json:"commander"`
-		Brawl     string `json:"brawl"`
-		Duel      string `json:"duel"`
-		Oldschool string `json:"oldschool"`
-	} `json:"legalities"`
-	Games           []string `json:"games"`
-	Reserved        bool     `json:"reserved"`
-	Foil            bool     `json:"foil"`
-	Nonfoil         bool     `json:"nonfoil"`
-	Oversized       bool     `json:"oversized"`
-	Promo           bool     `json:"promo"`
-	Reprint         bool     `json:"reprint"`
-	Variation       bool     `json:"variation"`
-	Set             string   `json:"set"`
-	SetName         string   `json:"set_name"`
-	SetType         string   `json:"set_type"`
-	SetURI          string   `json:"set_uri"`
-	SetSearchURI    string   `json:"set_search_uri"`
-	ScryfallSetURI  string   `json:"scryfall_set_uri"`
-	RulingsURI      string   `json:"rulings_uri"`
-	PrintsSearchURI string   `json:"prints_search_uri"`
-	CollectorNumber string   `json:"collector_number"`
-	Digital         bool     `json:"digital"`
-	Rarity          string   `json:"rarity"`
-	FlavorText      string   `json:"flavor_text"`
-	CardBackID      string   `json:"card_back_id"`
-	Artist          string   `json:"artist"`
-	ArtistIds       []string `json:"artist_ids"`
-	IllustrationID  string   `json:"illustration_id"`
-	BorderColor     string   `json:"border_color"`
-	Frame           string   `json:"frame"`
-	FullArt         bool     `json:"full_art"`
-	Textless        bool     `json:"textless"`
-	Booster         bool     `json:"booster"`
-	StorySpotlight  bool     `json:"story_spotlight"`
-	EdhrecRank      int      `json:"edhrec_rank"`
-	Preview         struct {
-		Source      string `json:"source"`
-		SourceURI   string `json:"source_uri"`
-		PreviewedAt string `json:"previewed_at"`
-	} `json:"preview"`
-	RelatedUris struct {
-		Gatherer       string `json:"gatherer"`
-		TcgplayerDecks string `json:"tcgplayer_decks"`
-		Edhrec         string `json:"edhrec"`
-		Mtgtop8        string `json:"mtgtop8"`
-	} `json:"related_uris"`
-}
 
-type SetPacks struct {
-	Packs [][]SetCard
-}
-
-func (director *GameDirector) getGameResources() {
+func (director *GameDirector) getGameResources() error {
+	logger := GetLogger()
 	switch director.options.Type {
 	case game.DRAFT:
 		switch director.options.Mode {
@@ -543,9 +502,9 @@ func (director *GameDirector) getGameResources() {
 			opts := director.options.GameOptions.Draft.Regular
 			for i := 0; i < opts.TotalPacks; i++ {
 				setAbbrev := opts.SelectedPacks[strconv.Itoa(i)]
-				res, err := http.Get(fmt.Sprintf("http://localhost:8000/set/%s/pack?n=%d", setAbbrev, director.options.TotalPlayers))
+				res, err := http.Get(fmt.Sprintf("%s/set/%s/pack?n=%d", ApiUri, setAbbrev, director.options.TotalPlayers))
 				if err != nil {
-					log.Fatalln("Cannot get game options!", err)
+					logger.Fatalw("cannot get game options", "error", err.Error())
 				}
 				var boosters SetPacks
 				msg, err := ioutil.ReadAll(res.Body)
@@ -569,7 +528,7 @@ func (director *GameDirector) getGameResources() {
 			director.totalPacks = opts.TotalPacks
 			break
 		default:
-			panic(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
+			return errors.New(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
 		}
 		break
 	case game.SEALED:
@@ -592,10 +551,9 @@ func (director *GameDirector) getGameResources() {
 		}
 		break
 	default:
-		panic(fmt.Sprintf("Unknown game type: %d", director.options.Type))
-		break
+		return errors.New(fmt.Sprintf("Unknown game mode: %d", director.options.Mode))
 	}
-
+	return nil
 }
 
 // We'll need to define an Upgrader
@@ -630,7 +588,7 @@ func (director *GameDirector) Listen() {
 		case c := <-director.delClientCh:
 
 			clientID := c.id
-			logger.Debugw("Removing client: ", clientID)
+			logger.Debugw("Removing client", "client", clientID)
 			delete(director.Clients, clientID)
 
 			if len(director.Clients) == 0 {
@@ -645,17 +603,34 @@ func (director *GameDirector) Listen() {
 				})
 			}
 		case msg := <-director.sendAllCh:
-			logger.Debugw("Sending to call clients", "msg", msg)
+			logger.Debugw("Sending to all clients", "msg", msg)
 			director.messages = append(director.messages, msg)
 			director.sendAll(msg)
+		case <- director.startNextRoundCh:
+			logger.Infow("starting next round", "round", director.round)
+			if director.shouldStartNewPack() {
+				director.startNextPack()
+			} else {
+				director.rotateCards()
+			}
+			if director.IsEndOfDraft() {
+				for _, client := range director.Clients {
+					director.sendClientPool(client)
+					logger.Infow("Ending Game!", "game", director.gameId)
+				}
+			} else {
+				director.startNextRound()
+			}
 		case err := <-director.errCh:
-			logger.Error("Error", err.Error())
+			logger.Errorw("error occurred while sending messages to all clients", "error", err.Error())
 		case <-director.doneCh:
 			return
 		}
 	}
 
 }
+
+var ApiUri string
 
 func main() {
 	log.SetFlags(log.Lshortfile)
@@ -664,10 +639,19 @@ func main() {
 	gameId := flag.String("gameId", "", "Four byte url safe hex string")
 	flag.Parse()
 
+	ENV := os.Getenv("NODE_ENV")
+	if ENV == "dev" {
+		ApiUri = "http://localhost:8000"
+	} else {
+		ApiUri = "https://pw9-api-eyxrrfa2wq-uc.a.run.app"
+	}
+
+	logger := GetLogger()
+
 	var GameOptions game.GeneralOptions
-	res, err := http.Get(fmt.Sprintf("http://localhost:8000/game/%s", *gameId))
+	res, err := http.Get(fmt.Sprintf("%s/game/%s", ApiUri, *gameId))
 	if err != nil {
-		log.Fatalln("Cannot get game options!", err)
+		logger.Fatalw("Cannot get game options!", "error", err.Error())
 	}
 
 	defer res.Body.Close()
@@ -678,7 +662,9 @@ func main() {
 
 	director := NewGameDirector(GameOptions, *port, *gameId)
 
-	director.getGameResources()
+	if err := director.getGameResources(); err != nil {
+		panic(err)
+	}
 
 	go director.Listen()
 
