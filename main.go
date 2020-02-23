@@ -643,7 +643,7 @@ func main() {
 	if ENV == "dev" {
 		ApiUri = "http://localhost:8000"
 	} else {
-		ApiUri = "https://pw9-api-eyxrrfa2wq-uc.a.run.app"
+		ApiUri = "http://api.librajobs.org"
 	}
 
 	logger := GetLogger()
