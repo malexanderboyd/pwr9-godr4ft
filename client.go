@@ -85,7 +85,7 @@ func(c *Client)  listenWrite() {
 	for {
 		select {
 			case msg := <-c.ch:
-				logger.Debugw("send", "client", c.id, "msg", msg)
+				//logger.Debugw("send", "client", c.id, "msg", msg)
 				err := c.ws.WriteJSON(msg)
 				if err != nil {
 					c.director.deleteClient(c)

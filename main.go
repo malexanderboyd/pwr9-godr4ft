@@ -23,6 +23,7 @@ const (
 	ChatMessage GameMessageType = "chat_message"
 	HostChange  GameMessageType = "host_change"
 	GameStart   GameMessageType = "start_game"
+	GameEnd		GameMessageType = "end_game"
 	DeckContent GameMessageType = "deck_content"
 	PoolContent	GameMessageType = "pool_content"
 	ChooseCard  GameMessageType = "choose_card"
@@ -109,7 +110,7 @@ func (director *GameDirector) deleteClient(c *Client) {
 	director.delClientCh <- c
 }
 
-func (director *GameDirector) shutdown(c *Client) {
+func (director *GameDirector) shutdown() {
 	director.doneCh <- true
 }
 
@@ -332,7 +333,7 @@ func (director *GameDirector) startGame() {
 }
 
 func (director *GameDirector) IsEndOfDraft() bool {
-	if _, ok := director.roundPacks[director.packNumber + 1]; !ok {
+	if _, ok := director.roundPacks[director.packNumber]; !ok {
 		return true
 	}
 	return false
@@ -340,6 +341,8 @@ func (director *GameDirector) IsEndOfDraft() bool {
 func (director *GameDirector) startNextPack()  {
 	director.packNumber += 1
 	director.round = 0
+	logger := GetLogger()
+	logger.Infow("Starting next pack", "pack_number", director.packNumber)
 }
 
 func (director *GameDirector) startNextRound() {
@@ -371,9 +374,8 @@ func (director *GameDirector) startNextRound() {
 	director.roundPicksTimerCh = director.startRoundPicksTimer()
 }
 
-func (director *GameDirector) startRoundPicksTimer() chan int {
-	var roundTime time.Duration
-	logger := GetLogger()
+func (director *GameDirector) getRoundTimer() time.Duration {
+	var roundTime = 1 * time.Second
 	switch director.roundTimerType {
 	case "leisurely":
 		//'Leisurely - Starts @ 90s and decrements by 5s per pick'
@@ -396,7 +398,13 @@ func (director *GameDirector) startRoundPicksTimer() chan int {
 	if roundTime < 15*time.Second {
 		roundTime = 15 * time.Second
 	}
+	return roundTime
+}
 
+func (director *GameDirector) startRoundPicksTimer() chan int {
+
+	logger := GetLogger()
+	roundTime := director.getRoundTimer()
 	ticks := 0
 	ticker := time.NewTicker(1 * time.Second)
 	pickIncrease := make(chan int, len(director.Seats))
@@ -603,7 +611,9 @@ func (director *GameDirector) Listen() {
 				})
 			}
 		case msg := <-director.sendAllCh:
-			logger.Debugw("Sending to all clients", "msg", msg)
+			if msg.Type != DeckContent {
+				logger.Debugw("Sending to all clients", "msg", msg)
+			}
 			director.messages = append(director.messages, msg)
 			director.sendAll(msg)
 		case <- director.startNextRoundCh:
@@ -614,17 +624,20 @@ func (director *GameDirector) Listen() {
 				director.rotateCards()
 			}
 			if director.IsEndOfDraft() {
-				for _, client := range director.Clients {
-					director.sendClientPool(client)
-					logger.Infow("Ending Game!", "game", director.gameId)
-				}
+				logger.Infow("shutting down")
+				go director.shutdown()
 			} else {
 				director.startNextRound()
 			}
 		case err := <-director.errCh:
 			logger.Errorw("error occurred while sending messages to all clients", "error", err.Error())
 		case <-director.doneCh:
-			return
+			director.sendAll(&Message{
+				Type: GameEnd,
+				Data: strconv.Itoa(len(director.Clients)),
+			})
+			logger.Infow("Ended Game.", "game", director.gameId)
+			os.Exit(0)
 		}
 	}
 
@@ -643,7 +656,7 @@ func main() {
 	if ENV == "dev" {
 		ApiUri = "http://localhost:8000"
 	} else {
-		ApiUri = "http://api.librajobs.org"
+		ApiUri = "http://host.docker.internal:8000"
 	}
 
 	logger := GetLogger()
