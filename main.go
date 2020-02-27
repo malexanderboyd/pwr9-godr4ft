@@ -656,7 +656,7 @@ func main() {
 	if ENV == "dev" {
 		ApiUri = "http://localhost:8000"
 	} else {
-		ApiUri = "http://host.docker.internal:8000"
+		ApiUri = "http://api.librajobs.org"
 	}
 
 	logger := GetLogger()
