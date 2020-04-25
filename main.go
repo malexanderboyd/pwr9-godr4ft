@@ -170,6 +170,7 @@ func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) 
 		Name:  DraftCookieName,
 		Value: client.id,
 		Path:  "/",
+		Expires: time.Now().Add(time.Minute * 30),
 	}
 	if v := clientIdCookie.String(); v != "" {
 		clientIDHeader.Add("Set-Cookie", v)
