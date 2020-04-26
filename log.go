@@ -17,7 +17,7 @@ func GetLogger() *logger {
 	nonce.Do(func() {
 		ENV := os.Getenv("NODE_ENV")
 		Logger = initLogger(ENV)
-		})
+	})
 	return Logger
 }
 
@@ -33,9 +33,3 @@ func initLogger(environment string) *logger {
 		SugaredLogger: _log.Sugar(),
 	}
 }
-
-
-
-
-
-

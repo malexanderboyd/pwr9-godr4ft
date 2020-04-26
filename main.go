@@ -17,17 +17,19 @@ import (
 
 type GameMessageType string
 
-const NO_HOST_SENTINEL = -999
+const NO_HOST_SENTINEL = "-999"
 const (
 	NewPlayer   GameMessageType = "new_player"
 	ChatMessage GameMessageType = "chat_message"
 	HostChange  GameMessageType = "host_change"
 	GameStart   GameMessageType = "start_game"
-	GameEnd		GameMessageType = "end_game"
+	GameEnd     GameMessageType = "end_game"
 	DeckContent GameMessageType = "deck_content"
-	PoolContent	GameMessageType = "pool_content"
+	PoolContent GameMessageType = "pool_content"
 	ChooseCard  GameMessageType = "choose_card"
 )
+
+const DraftCookieName = "pwr9_draft"
 
 type Message struct {
 	Type GameMessageType `json:"type"`
@@ -60,11 +62,11 @@ type GameDirector struct {
 	roundTimerType    string
 	roundPacks        map[int]DraftRound
 	roundPicksTimerCh chan int
-	nextRoundPacks	  map[int][]SetCard
+	nextRoundPacks    map[int][]SetCard
 	totalPacks        int
-	host              int
-	Clients           map[int]*Client
-	Seats             map[int]int
+	host              string
+	Clients           map[string]*Client
+	Seats             map[string]int
 	messages          []*Message
 	addClientCh       chan *Client
 	delClientCh       chan *Client
@@ -87,11 +89,11 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		roundTimerType:    "",
 		round:             0,
 		roundPicksTimerCh: nil,
-		Seats:             make(map[int]int),
-		nextRoundPacks:	   make(map[int][]SetCard),
+		Seats:             make(map[string]int),
+		nextRoundPacks:    make(map[int][]SetCard),
 		totalPacks:        0,
 		host:              NO_HOST_SENTINEL,
-		Clients:           make(map[int]*Client),
+		Clients:           make(map[string]*Client),
 		messages:          []*Message{},
 		addClientCh:       make(chan *Client),
 		delClientCh:       make(chan *Client),
@@ -142,19 +144,46 @@ func (director *GameDirector) sendHostMessage(msg *Message) {
 }
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
+	logger := GetLogger()
+	var clientId string
+	cookies := r.Cookies()
+	for _, cookie := range cookies {
+		if cookie.Name == DraftCookieName {
+			clientId = cookie.Value
+		}
+	}
+
+	var client *Client
+	var err error
+	if director.isExistingClient(clientId) {
+		client = director.Clients[clientId]
+		logger.Debugw("reconnecting", "client", client.id)
+	} else {
+		client, err = NewClient(director)
+		if err != nil {
+			director.Error(err)
+		}
+	}
+
+	var clientIDHeader = http.Header{}
+	clientIdCookie := &http.Cookie{
+		Name:  DraftCookieName,
+		Value: client.id,
+		Path:  "/",
+		Expires: time.Now().Add(time.Minute * 30),
+	}
+	if v := clientIdCookie.String(); v != "" {
+		clientIDHeader.Add("Set-Cookie", v)
+	}
+
+
+	ws, err := upgrader.Upgrade(w, r, clientIDHeader)
 	if err != nil {
 		director.Error(err)
 		_, _ = fmt.Fprintf(w, err.Error())
 	}
+	client.ws = ws
 
-	client, err := NewClient(ws, director)
-	if err != nil {
-		if err = ws.Close(); err != nil {
-			director.Error(err)
-			_, _ = fmt.Fprintf(w, err.Error())
-		}
-	}
 	if director.host == NO_HOST_SENTINEL {
 		director.host = client.id
 		client.Write(&Message{
@@ -166,7 +195,18 @@ func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) 
 	go client.Listen()
 }
 
-func (director *GameDirector) handleClientMessage(clientID int, msg *Message) {
+func (director *GameDirector) isExistingClient(clientId string) bool {
+	if clientId == "" {
+		return false
+	}
+
+	if _, ok := director.Clients[clientId]; !ok {
+		return false
+	}
+	return true
+}
+
+func (director *GameDirector) handleClientMessage(clientID string, msg *Message) {
 	logger := GetLogger()
 	switch msg.Type {
 	case ChatMessage:
@@ -200,24 +240,16 @@ func (director *GameDirector) handleClientMessage(clientID int, msg *Message) {
 	}
 }
 
-func (director *GameDirector) getClientBySeat(seat int) *Client {
-	nextClientID := director.Seats[seat]
-	if client, ok := director.Clients[nextClientID]; ok {
-		return client
-	}
-	return nil
-}
-
-func (director *GameDirector) getSeatByClientId(clientId int) int {
+func (director *GameDirector) getSeatByClientId(clientId string) int {
 	return director.Seats[clientId]
 }
 
-func (director *GameDirector) getPackByClientID(clientId int) []SetCard {
+func (director *GameDirector) getPackByClientID(clientId string) []SetCard {
 	playerSeat := director.getSeatByClientId(clientId)
 	return director.roundPacks[director.packNumber].PlayerPacks[playerSeat]
 }
 
-func (director *GameDirector) handleClientChooseCard(clientID int, msg *Message) error {
+func (director *GameDirector) handleClientChooseCard(clientID string, msg *Message) error {
 	rawMsgContents := msg.Data
 	client := director.Clients[clientID]
 	if client == nil {
@@ -246,7 +278,6 @@ func (director *GameDirector) handleClientChooseCard(clientID int, msg *Message)
 		client.pool = append(client.pool, chosenCard)
 
 		currentPack = append(currentPack[:selectedCardMsg.PickedCardIndex], currentPack[selectedCardMsg.PickedCardIndex+1:]...)
-
 
 		playerSeat := director.getSeatByClientId(client.id)
 		var nextClientSeat int
@@ -296,14 +327,15 @@ func (director *GameDirector) startGame() {
 			break
 		case game.REGULAR:
 			CurrentRound := director.roundPacks[director.packNumber]
-			for i, client := range director.Clients {
+			var currentPlayer = 0
+			for clientID, client := range director.Clients {
 
-				if i >= len(CurrentRound.PlayerPacks) {
+				if currentPlayer >= len(CurrentRound.PlayerPacks) {
 					break
 				}
 
-				playerPack := CurrentRound.PlayerPacks[i]
-				director.Seats[i] = client.id
+				playerPack := CurrentRound.PlayerPacks[currentPlayer]
+				director.Seats[clientID] = currentPlayer
 				type CardPack struct {
 					SetName string    `json:"setName"`
 					Pack    []SetCard `json:"pack"`
@@ -318,6 +350,7 @@ func (director *GameDirector) startGame() {
 					Data: string(emp),
 				})
 
+				currentPlayer++
 			}
 			break
 		default:
@@ -338,7 +371,7 @@ func (director *GameDirector) IsEndOfDraft() bool {
 	}
 	return false
 }
-func (director *GameDirector) startNextPack()  {
+func (director *GameDirector) startNextPack() {
 	director.packNumber += 1
 	director.round = 0
 	logger := GetLogger()
@@ -348,13 +381,13 @@ func (director *GameDirector) startNextPack()  {
 func (director *GameDirector) startNextRound() {
 	director.round += 1
 	CurrentPackRound := director.roundPacks[director.packNumber]
-	for i, client := range director.Clients {
+	for clientID, i := range director.Seats {
 
 		if i >= len(CurrentPackRound.PlayerPacks) {
 			break
 		}
-		playerSeat := director.Seats[client.id]
-		playerPack := CurrentPackRound.PlayerPacks[playerSeat]
+		client := director.Clients[clientID]
+		playerPack := CurrentPackRound.PlayerPacks[i]
 
 		type CardPack struct {
 			SetName string    `json:"setName"`
@@ -365,7 +398,8 @@ func (director *GameDirector) startNextRound() {
 			SetName: CurrentPackRound.SetAbbreviation,
 			Pack:    playerPack,
 		})
-		go client.Write(&Message{
+
+		client.Write(&Message{
 			Type: DeckContent,
 			Data: string(emp),
 		})
@@ -454,7 +488,6 @@ func (director *GameDirector) shouldStartNewPack() bool {
 	return false
 }
 
-
 func (director *GameDirector) pause() {
 	logger := GetLogger()
 	logger.Infow("NO HOST! *PAUSING*.")
@@ -489,7 +522,6 @@ func (director *GameDirector) promoteNewHost() {
 		})
 	}
 }
-
 
 func (director *GameDirector) getGameResources() error {
 	logger := GetLogger()
@@ -616,7 +648,7 @@ func (director *GameDirector) Listen() {
 			}
 			director.messages = append(director.messages, msg)
 			director.sendAll(msg)
-		case <- director.startNextRoundCh:
+		case <-director.startNextRoundCh:
 			logger.Infow("starting next round", "round", director.round)
 			if director.shouldStartNewPack() {
 				director.startNextPack()
@@ -653,10 +685,10 @@ func main() {
 	flag.Parse()
 
 	ENV := os.Getenv("NODE_ENV")
-	if ENV == "dev" {
-		ApiUri = "http://localhost:8000"
+	if ENV == "docker" {
+		ApiUri = "http://api:8002"
 	} else {
-		ApiUri = "http://api.librajobs.org"
+		ApiUri = "http://localhost:8002"
 	}
 
 	logger := GetLogger()
