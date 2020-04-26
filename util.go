@@ -2,94 +2,76 @@ package main
 
 import "errors"
 
+// generated from https://mholt.github.io/json-to-go/
 type SetCard struct {
-	Object        string `json:"object"`
-	ID            string `json:"id"`
-	OracleID      string `json:"oracle_id"`
-	MultiverseIds []int  `json:"multiverse_ids"`
-	MtgoID        int    `json:"mtgo_id"`
-	ArenaID       int    `json:"arena_id"`
-	TcgplayerID   int    `json:"tcgplayer_id"`
-	Name          string `json:"name"`
-	Lang          string `json:"lang"`
-	ReleasedAt    string `json:"released_at"`
-	URI           string `json:"uri"`
-	ScryfallURI   string `json:"scryfall_uri"`
-	Layout        string `json:"layout"`
-	HighresImage  bool   `json:"highres_image"`
-	ImageUris     struct {
-		Small      string `json:"small"`
-		Normal     string `json:"normal"`
-		Large      string `json:"large"`
-		Png        string `json:"png"`
-		ArtCrop    string `json:"art_crop"`
-		BorderCrop string `json:"border_crop"`
-	} `json:"image_uris"`
-	ManaCost      string   `json:"mana_cost"`
-	Cmc           float64  `json:"cmc"`
-	TypeLine      string   `json:"type_line"`
-	OracleText    string   `json:"oracle_text"`
-	Power         string   `json:"power"`
-	Toughness     string   `json:"toughness"`
-	Colors        []string `json:"colors"`
-	ColorIdentity []string `json:"color_identity"`
-	Legalities    struct {
-		Standard  string `json:"standard"`
+	Artist                string        `json:"artist"`
+	BorderColor           string        `json:"borderColor"`
+	ColorIdentity         []string      `json:"colorIdentity"`
+	Colors                []string      `json:"colors"`
+	ConvertedManaCost     float64       `json:"convertedManaCost"`
+	EdhrecRank            int           `json:"edhrecRank"`
+	FaceConvertedManaCost float64       `json:"faceConvertedManaCost"`
+	FlavorText            string        `json:"flavorText"`
+	ForeignData           []interface{} `json:"foreignData"`
+	FrameEffect           string        `json:"frameEffect"`
+	FrameEffects          []string      `json:"frameEffects"`
+	FrameVersion          string        `json:"frameVersion"`
+	HasFoil               bool          `json:"hasFoil"`
+	HasNonFoil            bool          `json:"hasNonFoil"`
+	IsMtgo                bool          `json:"isMtgo"`
+	IsPaper               bool          `json:"isPaper"`
+	IsPromo               bool          `json:"isPromo"`
+	IsStarter             bool          `json:"isStarter"`
+	Layout                string        `json:"layout"`
+	Legalities            struct {
+		Brawl     string `json:"brawl"`
+		Commander string `json:"commander"`
+		Duel      string `json:"duel"`
 		Future    string `json:"future"`
 		Historic  string `json:"historic"`
-		Pioneer   string `json:"pioneer"`
-		Modern    string `json:"modern"`
 		Legacy    string `json:"legacy"`
-		Pauper    string `json:"pauper"`
-		Vintage   string `json:"vintage"`
+		Modern    string `json:"modern"`
 		Penny     string `json:"penny"`
-		Commander string `json:"commander"`
-		Brawl     string `json:"brawl"`
-		Duel      string `json:"duel"`
-		Oldschool string `json:"oldschool"`
+		Pioneer   string `json:"pioneer"`
+		Standard  string `json:"standard"`
+		Vintage   string `json:"vintage"`
 	} `json:"legalities"`
-	Games           []string `json:"games"`
-	Reserved        bool     `json:"reserved"`
-	Foil            bool     `json:"foil"`
-	Nonfoil         bool     `json:"nonfoil"`
-	Oversized       bool     `json:"oversized"`
-	Promo           bool     `json:"promo"`
-	Reprint         bool     `json:"reprint"`
-	Variation       bool     `json:"variation"`
-	Set             string   `json:"set"`
-	SetName         string   `json:"set_name"`
-	SetType         string   `json:"set_type"`
-	SetURI          string   `json:"set_uri"`
-	SetSearchURI    string   `json:"set_search_uri"`
-	ScryfallSetURI  string   `json:"scryfall_set_uri"`
-	RulingsURI      string   `json:"rulings_uri"`
-	PrintsSearchURI string   `json:"prints_search_uri"`
-	CollectorNumber string   `json:"collector_number"`
-	Digital         bool     `json:"digital"`
-	Rarity          string   `json:"rarity"`
-	FlavorText      string   `json:"flavor_text"`
-	CardBackID      string   `json:"card_back_id"`
-	Artist          string   `json:"artist"`
-	ArtistIds       []string `json:"artist_ids"`
-	IllustrationID  string   `json:"illustration_id"`
-	BorderColor     string   `json:"border_color"`
-	Frame           string   `json:"frame"`
-	FullArt         bool     `json:"full_art"`
-	Textless        bool     `json:"textless"`
-	Booster         bool     `json:"booster"`
-	StorySpotlight  bool     `json:"story_spotlight"`
-	EdhrecRank      int      `json:"edhrec_rank"`
-	Preview         struct {
-		Source      string `json:"source"`
-		SourceURI   string `json:"source_uri"`
-		PreviewedAt string `json:"previewed_at"`
-	} `json:"preview"`
-	RelatedUris struct {
-		Gatherer       string `json:"gatherer"`
-		TcgplayerDecks string `json:"tcgplayer_decks"`
-		Edhrec         string `json:"edhrec"`
-		Mtgtop8        string `json:"mtgtop8"`
-	} `json:"related_uris"`
+	ManaCost     string   `json:"manaCost"`
+	Name         string   `json:"name"`
+	Names        []string `json:"names"`
+	Number       string   `json:"number"`
+	OtherFaceIds []string `json:"otherFaceIds"`
+	Prices       struct {
+		Mtgo struct {
+		} `json:"mtgo"`
+		MtgoFoil struct {
+		} `json:"mtgoFoil"`
+		Paper struct {
+		} `json:"paper"`
+		PaperFoil struct {
+		} `json:"paperFoil"`
+	} `json:"prices"`
+	Printings    []string `json:"printings"`
+	PurchaseUrls struct {
+		Tcgplayer string `json:"tcgplayer"`
+	} `json:"purchaseUrls"`
+	Rarity  string `json:"rarity"`
+	Rulings []struct {
+		Date string `json:"date"`
+		Text string `json:"text"`
+	} `json:"rulings"`
+	ScryfallID             string        `json:"scryfallId"`
+	ScryfallIllustrationID string        `json:"scryfallIllustrationId"`
+	ScryfallOracleID       string        `json:"scryfallOracleId"`
+	Side                   string        `json:"side"`
+	Subtypes               []string      `json:"subtypes"`
+	Supertypes             []interface{} `json:"supertypes"`
+	TcgplayerProductID     int           `json:"tcgplayerProductId"`
+	Text                   string        `json:"text"`
+	Type                   string        `json:"type"`
+	Types                  []string      `json:"types"`
+	UUID                   string        `json:"uuid"`
+	Variations             []string      `json:"variations"`
 }
 
 type SetPacks struct {
