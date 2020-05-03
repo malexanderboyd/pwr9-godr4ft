@@ -29,6 +29,13 @@ const (
 	ChooseCard  GameMessageType = "choose_card"
 )
 
+type CardPack struct {
+	SetName string    `json:"setName"`
+	Round int 	  `json:"round"`
+	PackNumber int `json:"packNumber"`
+	Pack    []SetCard `json:"pack"`
+}
+
 const DraftCookieName = "pwr9_draft"
 
 type Message struct {
@@ -336,10 +343,6 @@ func (director *GameDirector) startGame() {
 
 				playerPack := CurrentRound.PlayerPacks[currentPlayer]
 				director.Seats[clientID] = currentPlayer
-				type CardPack struct {
-					SetName string    `json:"setName"`
-					Pack    []SetCard `json:"pack"`
-				}
 
 				emp, _ := json.Marshal(&CardPack{
 					SetName: CurrentRound.SetAbbreviation,
@@ -389,14 +392,12 @@ func (director *GameDirector) startNextRound() {
 		client := director.Clients[clientID]
 		playerPack := CurrentPackRound.PlayerPacks[i]
 
-		type CardPack struct {
-			SetName string    `json:"setName"`
-			Pack    []SetCard `json:"pack"`
-		}
 
 		emp, _ := json.Marshal(&CardPack{
 			SetName: CurrentPackRound.SetAbbreviation,
 			Pack:    playerPack,
+			Round: director.round,
+			PackNumber: director.packNumber,
 		})
 
 		client.Write(&Message{
