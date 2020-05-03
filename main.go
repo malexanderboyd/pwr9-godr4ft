@@ -29,6 +29,13 @@ const (
 	ChooseCard  GameMessageType = "choose_card"
 )
 
+type CardPack struct {
+	SetName string    `json:"setName"`
+	Round int 	  `json:"round"`
+	PackNumber int `json:"packNumber"`
+	Pack    []SetCard `json:"pack"`
+}
+
 const DraftCookieName = "pwr9_draft"
 
 type Message struct {
@@ -87,7 +94,7 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		gameStarted:       false,
 		packNumber:        0,
 		roundTimerType:    "",
-		round:             0,
+		round:             1,
 		roundPicksTimerCh: nil,
 		Seats:             make(map[string]int),
 		nextRoundPacks:    make(map[int][]SetCard),
@@ -336,10 +343,6 @@ func (director *GameDirector) startGame() {
 
 				playerPack := CurrentRound.PlayerPacks[currentPlayer]
 				director.Seats[clientID] = currentPlayer
-				type CardPack struct {
-					SetName string    `json:"setName"`
-					Pack    []SetCard `json:"pack"`
-				}
 
 				emp, _ := json.Marshal(&CardPack{
 					SetName: CurrentRound.SetAbbreviation,
@@ -373,13 +376,11 @@ func (director *GameDirector) IsEndOfDraft() bool {
 }
 func (director *GameDirector) startNextPack() {
 	director.packNumber += 1
-	director.round = 0
 	logger := GetLogger()
 	logger.Infow("Starting next pack", "pack_number", director.packNumber)
 }
 
 func (director *GameDirector) startNextRound() {
-	director.round += 1
 	CurrentPackRound := director.roundPacks[director.packNumber]
 	for clientID, i := range director.Seats {
 
@@ -389,14 +390,12 @@ func (director *GameDirector) startNextRound() {
 		client := director.Clients[clientID]
 		playerPack := CurrentPackRound.PlayerPacks[i]
 
-		type CardPack struct {
-			SetName string    `json:"setName"`
-			Pack    []SetCard `json:"pack"`
-		}
 
 		emp, _ := json.Marshal(&CardPack{
 			SetName: CurrentPackRound.SetAbbreviation,
 			Pack:    playerPack,
+			Round: director.round,
+			PackNumber: director.packNumber+1,
 		})
 
 		client.Write(&Message{
@@ -652,7 +651,9 @@ func (director *GameDirector) Listen() {
 			logger.Infow("starting next round", "round", director.round)
 			if director.shouldStartNewPack() {
 				director.startNextPack()
+				director.round = 1
 			} else {
+				director.round += 1
 				director.rotateCards()
 			}
 			if director.IsEndOfDraft() {
