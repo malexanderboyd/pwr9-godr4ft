@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"io/ioutil"
 	"log"
 	"main/game"
@@ -152,44 +151,33 @@ func (director *GameDirector) sendHostMessage(msg *Message) {
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
 	logger := GetLogger()
-	var clientId string
-	cookies := r.Cookies()
-	for _, cookie := range cookies {
-		if cookie.Name == DraftCookieName {
-			clientId = cookie.Value
-		}
-	}
-
 	var client *Client
-	var err error
-	if director.isExistingClient(clientId) {
-		client = director.Clients[clientId]
+	var oldMessages []*Message
+	var hasCookie, clientID = hasDraftClientIDCookie(r)
+	if hasCookie && director.isExistingClient(clientID) {
+		client = director.Clients[clientID]
+		oldMessages = client.messages
+		client.doneCh <- true
 		logger.Debugw("reconnecting", "client", client.id)
 	} else {
+		var err error
 		client, err = NewClient(director)
 		if err != nil {
 			director.Error(err)
+			return
 		}
 	}
 
-	var clientIDHeader = http.Header{}
-	clientIdCookie := &http.Cookie{
-		Name:  DraftCookieName,
-		Value: client.id,
-		Path:  "/",
-		Expires: time.Now().Add(time.Minute * 30),
-	}
-	if v := clientIdCookie.String(); v != "" {
-		clientIDHeader.Add("Set-Cookie", v)
-	}
-
-
-	ws, err := upgrader.Upgrade(w, r, clientIDHeader)
+	createDraftClientIDCookie := createDraftClientIDCookie(client.id)
+	ws, err := upgrader.Upgrade(w, r, createDraftClientIDCookie)
 	if err != nil {
 		director.Error(err)
 		_, _ = fmt.Fprintf(w, err.Error())
 	}
 	client.ws = ws
+	if client.messages != nil {
+		client.messages = oldMessages
+	}
 
 	if director.host == NO_HOST_SENTINEL {
 		director.host = client.id
@@ -595,16 +583,6 @@ func (director *GameDirector) getGameResources() error {
 	return nil
 }
 
-// We'll need to define an Upgrader
-// this will require a Read and Write buffer size
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
 func (director *GameDirector) Listen() {
 	logger := GetLogger()
 	logger.Infow("Listening", "game", director.gameId, "port", director.port)
@@ -624,6 +602,7 @@ func (director *GameDirector) Listen() {
 				Data: strconv.Itoa(len(director.Clients)),
 			})
 			go director.sendPastMessages(c)
+			go c.sendOldMessages()
 		case c := <-director.delClientCh:
 
 			clientID := c.id
@@ -631,7 +610,7 @@ func (director *GameDirector) Listen() {
 			delete(director.Clients, clientID)
 
 			if len(director.Clients) == 0 {
-				director.pause()
+				// director.pause()
 			} else {
 				if clientID == director.host {
 					director.promoteNewHost()
@@ -689,7 +668,7 @@ func main() {
 	if ENV == "docker" {
 		ApiUri = "http://api:8002"
 	} else {
-		ApiUri = "http://localhost:8002"
+		ApiUri = "http://localhost/api"
 	}
 
 	logger := GetLogger()

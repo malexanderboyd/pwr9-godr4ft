@@ -1,6 +1,10 @@
 package main
 
-import "errors"
+import (
+	"errors"
+	"net/http"
+	"time"
+)
 
 // generated from https://mholt.github.io/json-to-go/
 type SetCard struct {
@@ -83,4 +87,28 @@ func getRandomClientId(m map[string]*Client) (string, error) {
 		return k, nil
 	}
 	return "", errors.New("no clients available")
+}
+
+func createDraftClientIDCookie(clientID string) http.Header {
+	var clientIDHeader = http.Header{}
+	clientIdCookie := &http.Cookie{
+		Name:  DraftCookieName,
+		Value: clientID,
+		Path:  "/",
+		Expires: time.Now().Add(time.Minute * 30),
+	}
+	if v := clientIdCookie.String(); v != "" {
+		clientIDHeader.Add("Set-Cookie", v)
+	}
+	return clientIDHeader
+}
+
+func hasDraftClientIDCookie(r *http.Request) (bool, string) {
+	cookies := r.Cookies()
+	for _, cookie := range cookies {
+		if cookie.Name == DraftCookieName {
+			return true, cookie.Value
+		}
+	}
+	return false, ""
 }
