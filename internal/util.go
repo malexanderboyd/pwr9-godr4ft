@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"errors"
@@ -92,9 +92,9 @@ func getRandomClientId(m map[string]*Client) (string, error) {
 func createDraftClientIDCookie(clientID string) http.Header {
 	var clientIDHeader = http.Header{}
 	clientIdCookie := &http.Cookie{
-		Name:  DraftCookieName,
-		Value: clientID,
-		Path:  "/",
+		Name:    DraftCookieName,
+		Value:   clientID,
+		Path:    "/",
 		Expires: time.Now().Add(time.Minute * 30),
 	}
 	if v := clientIdCookie.String(); v != "" {

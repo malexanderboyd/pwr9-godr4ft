@@ -1,4 +1,4 @@
-module main
+module github.com/malexanderboyd/pwr9-godr4ft
 
 go 1.13
 

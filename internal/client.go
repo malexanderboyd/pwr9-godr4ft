@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"encoding/json"
@@ -27,9 +27,8 @@ const (
 
 var (
 	newline = []byte{'\n'}
-	space = []byte{' '}
+	space   = []byte{' '}
 )
-
 
 // We'll need to define an Upgrader
 // this will require a Read and Write buffer size
@@ -57,10 +56,7 @@ func NewClient(director *GameDirector) (*Client, error) {
 		return nil, errors.New("cannot add client with nil GameDirector")
 	}
 	maxId++
-	clientID := fmt.Sprintf("%s_%d", director.gameId, maxId)
-
-
-
+	clientID := fmt.Sprintf("%s_%d", director.GameId, maxId)
 
 	ch := make(chan *Message, channelBufSize)
 	doneCh := make(chan bool)
