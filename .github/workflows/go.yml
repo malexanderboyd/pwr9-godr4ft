@@ -30,4 +30,4 @@ jobs:
       run: go build -v -o main github.com/malexanderboyd/pwr9-godr4ft/cmd/godr4ft
 
     - name: Test
-      run: go test -v .
+      run: go test -v github.com/malexanderboyd/pwr9-godr4ft/cmd/godr4ft
