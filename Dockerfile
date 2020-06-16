@@ -6,7 +6,7 @@ COPY go.sum .
 RUN go mod download
 
 COPY . .
-RUN go build -o main main
+RUN go build -o main github.com/malexanderboyd/pwr9-godr4ft/cmd/godr4ft
 
 FROM alpine
 COPY --from=builder /app/main /

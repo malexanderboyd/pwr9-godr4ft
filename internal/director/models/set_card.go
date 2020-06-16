@@ -1,6 +1,4 @@
-package main
-
-import "errors"
+package models
 
 // generated from https://mholt.github.io/json-to-go/
 type SetCard struct {
@@ -72,15 +70,4 @@ type SetCard struct {
 	Types                  []string      `json:"types"`
 	UUID                   string        `json:"uuid"`
 	Variations             []string      `json:"variations"`
-}
-
-type SetPacks struct {
-	Packs [][]SetCard
-}
-
-func getRandomClientId(m map[string]*Client) (string, error) {
-	for k := range m {
-		return k, nil
-	}
-	return "", errors.New("no clients available")
 }
