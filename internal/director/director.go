@@ -1,9 +1,13 @@
-package internal
+package director
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gorilla/websocket"
+	"github.com/malexanderboyd/pwr9-godr4ft/internal"
+	"github.com/malexanderboyd/pwr9-godr4ft/internal/director/models"
+	"github.com/malexanderboyd/pwr9-godr4ft/internal/director/utils"
 	"github.com/malexanderboyd/pwr9-godr4ft/internal/game"
 	"io/ioutil"
 	"log"
@@ -12,52 +16,6 @@ import (
 	"strconv"
 	"time"
 )
-
-type GameMessageType string
-
-const NoHostSentinel = "-999"
-const (
-	NewPlayer    GameMessageType = "new_player"
-	ChatMessage  GameMessageType = "chat_message"
-	HostChange   GameMessageType = "host_change"
-	GameStart    GameMessageType = "start_game"
-	GameEnd      GameMessageType = "end_game"
-	RoundContent GameMessageType = "round_content"
-	PoolContent  GameMessageType = "pool_content"
-	ChooseCard   GameMessageType = "choose_card"
-)
-
-type CardPack struct {
-	SetName    string    `json:"setName"`
-	Round      int       `json:"round"`
-	PackNumber int       `json:"packNumber"`
-	Pack       []SetCard `json:"pack"`
-	Timer      int       `json:"timer"`
-}
-
-const DraftCookieName = "pwr9_draft"
-
-type Message struct {
-	Type GameMessageType `json:"type"`
-	Data string          `json:"data"`
-}
-
-type DraftRound struct {
-	SetAbbreviation string
-	PlayerPacks     map[int][]SetCard
-}
-
-type DraftPool struct {
-	Cards []SetCard `json:"cards"`
-}
-
-type ChooseCardJson struct {
-	PickedCardIndex int `json:"pickedCardIndex"`
-}
-
-func (dr *DraftRound) getPlayerPacksBySeat(playerSeatNumber int) []SetCard {
-	return dr.PlayerPacks[playerSeatNumber]
-}
 
 type GameDirector struct {
 	clientsContents map[string][]string
@@ -70,26 +28,27 @@ type GameDirector struct {
 	packNumber         int
 	round              int
 	roundTimerType     string
-	roundPacks         map[int]DraftRound
+	roundTimerServerForcePick bool
+	roundPacks         map[int]models.DraftRound
 	roundPicksTickerCh chan int
-	nextRoundPacks     map[int][]SetCard
+	nextRoundPacks     map[int][]models.SetCard
 	totalPacks         int
 	host               string
 	Clients            map[string]*Client
 	Seats              map[string]int
-	messages           []*Message
+	messages           []*models.Message
 	addClientCh        chan *Client
 	delClientCh        chan *Client
-	sendAllCh          chan *Message
+	sendAllCh          chan *models.Message
 	startNextRoundCh   chan bool
-	doneCh            chan bool
-	errCh             chan error
+	doneCh             chan bool
+	errCh              chan error
 }
 
 func NewGameDirector(options game.GeneralOptions, port int, gameId string) *GameDirector {
 	return &GameDirector{
 		clientsContents:    nil,
-		roundPacks:         make(map[int]DraftRound),
+		roundPacks:         make(map[int]models.DraftRound),
 		pool:               nil,
 		Port:               port,
 		GameId:             gameId,
@@ -100,25 +59,25 @@ func NewGameDirector(options game.GeneralOptions, port int, gameId string) *Game
 		round:              1,
 		roundPicksTickerCh: nil,
 		Seats:              make(map[string]int),
-		nextRoundPacks:     make(map[int][]SetCard),
+		nextRoundPacks:     make(map[int][]models.SetCard),
 		totalPacks:         0,
-		host:               NoHostSentinel,
+		host:               models.NoHostSentinel,
 		Clients:            make(map[string]*Client),
-		messages:           []*Message{},
+		messages:           []*models.Message{},
 		addClientCh:        make(chan *Client),
 		delClientCh:        make(chan *Client),
-		sendAllCh:          make(chan *Message),
+		sendAllCh:          make(chan *models.Message),
 		startNextRoundCh:   make(chan bool),
 		doneCh:             make(chan bool),
 		errCh:              make(chan error),
 	}
 }
 
-func (director *GameDirector) addNewClient(c *Client) {
+func (director *GameDirector) AddNewClient(c *Client) {
 	director.addClientCh <- c
 }
 
-func (director *GameDirector) deleteClient(c *Client) {
+func (director *GameDirector) DeleteClient(c *Client) {
 	director.delClientCh <- c
 }
 
@@ -136,17 +95,17 @@ func (director *GameDirector) sendPastMessages(c *Client) {
 	}
 }
 
-func (director *GameDirector) SendAll(msg *Message) {
+func (director *GameDirector) SendAll(msg *models.Message) {
 	director.sendAllCh <- msg
 }
 
-func (director *GameDirector) sendAll(msg *Message) {
+func (director *GameDirector) sendAll(msg *models.Message) {
 	for _, c := range director.Clients {
 		c.Write(msg)
 	}
 }
 
-func (director *GameDirector) sendHostMessage(msg *Message) {
+func (director *GameDirector) sendHostMessage(msg *models.Message) {
 	host := director.Clients[director.host]
 	if host != nil {
 		host.Write(msg)
@@ -154,44 +113,44 @@ func (director *GameDirector) sendHostMessage(msg *Message) {
 }
 
 func (director *GameDirector) newClient(w http.ResponseWriter, r *http.Request) {
-	logger := GetLogger()
-	var client *Client
-	var oldMessages []*Message
-	var hasCookie, clientID = hasDraftClientIDCookie(r)
-	if hasCookie && director.isExistingClient(clientID) {
-		client = director.Clients[clientID]
-		oldMessages = client.messages
-		client.doneCh <- true
-		logger.Debugw("reconnecting", "client", client.id)
-	} else {
-		var err error
-		client, err = NewClient(director)
-		if err != nil {
-			director.Error(err)
-			return
-		}
+	//var hasCookie, clientID = utils.HasDraftClientIDCookie(r, models.DraftCookieName)
+	//if hasCookie && director.isExistingClien t(clientID) {
+	//	director.Clients[clientID].Done()
+	//}
+	var err error
+	newClient, err := NewClient(director)
+	if err != nil {
+		director.Error(err)
+		return
 	}
 
-	createDraftClientIDCookie := createDraftClientIDCookie(client.id)
-	ws, err := upgrader.Upgrade(w, r, createDraftClientIDCookie)
+	DraftClientIDCookieHeader := utils.CreateDraftClientIDCookieHeader(newClient.Id, models.DraftCookieName)
+
+	var upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+
+	ws, err := upgrader.Upgrade(w, r, DraftClientIDCookieHeader)
 	if err != nil {
 		director.Error(err)
 		_, _ = fmt.Fprintf(w, err.Error())
 	}
-	client.ws = ws
-	if client.messages != nil {
-		client.messages = oldMessages
-	}
 
-	if director.host == NoHostSentinel {
-		director.host = client.id
-		client.Write(&Message{
-			Type: HostChange,
+	newClient.Websocket = ws
+
+	if director.host == models.NoHostSentinel {
+		director.host = newClient.Id
+		newClient.Write(&models.Message{
+			Type: models.HostChange,
 			Data: strconv.Itoa(1),
 		})
 	}
-	director.addNewClient(client)
-	go client.Listen()
+	director.AddNewClient(newClient)
+	go newClient.Listen()
 }
 
 func (director *GameDirector) isExistingClient(clientId string) bool {
@@ -205,19 +164,15 @@ func (director *GameDirector) isExistingClient(clientId string) bool {
 	return true
 }
 
-func (director *GameDirector) handleClientMessage(clientID string, msg *Message) {
-	logger := GetLogger()
+func (director *GameDirector) HandleClientMessage(clientID string, msg *models.Message) {
+	logger := internal.GetLogger()
 	switch msg.Type {
-	case ChatMessage:
+	case models.ChatMessage:
 		director.SendAll(msg)
 		break
-	case GameStart:
+	case models.GameStart:
 		if !director.gameStarted {
-
-			type TimerSettings struct {
-				Type string `json:"timer"`
-			}
-			var timerSetting = &TimerSettings{}
+			var timerSetting = &models.TimerSettings{}
 			if err := json.Unmarshal([]byte(msg.Data), &timerSetting); err != nil {
 				director.Error(err)
 			} else {
@@ -228,7 +183,7 @@ func (director *GameDirector) handleClientMessage(clientID string, msg *Message)
 			go director.startGame()
 		}
 		break
-	case ChooseCard:
+	case models.ChooseCard:
 		if director.gameStarted {
 			if err := director.handleClientChooseCard(clientID, msg); err != nil {
 				director.Error(err)
@@ -255,26 +210,26 @@ func (director *GameDirector) getClientIdBySeat(target int) string {
 	return ""
 }
 
-func (director *GameDirector) getPackByClientID(clientId string) []SetCard {
+func (director *GameDirector) getPackByClientID(clientId string) []models.SetCard {
 	playerSeat := director.getSeatByClientId(clientId)
 	return director.roundPacks[director.packNumber].PlayerPacks[playerSeat]
 }
 
-func (director *GameDirector) handleClientChooseCard(clientID string, msg *Message) error {
+func (director *GameDirector) handleClientChooseCard(clientID string, msg *models.Message) error {
 	rawMsgContents := msg.Data
 	client := director.Clients[clientID]
 	if client == nil {
 		return errors.New(fmt.Sprintf("No client with id: %s. Must provide valid client ID", clientID))
 	} else {
 
-		var selectedCardMsg ChooseCardJson
+		var selectedCardMsg models.ChooseCardJson
 		if err := json.Unmarshal([]byte(rawMsgContents), &selectedCardMsg); err != nil {
 			director.Error(err)
 		}
 
-		currentPack := director.getPackByClientID(client.id)
+		currentPack := director.getPackByClientID(client.Id)
 		if currentPack == nil {
-			return errors.New(fmt.Sprintf("client %s already chose this round, resent chose_card msg", client.id))
+			return errors.New(fmt.Sprintf("client %s already chose this round, resent chose_card msg", client.Id))
 		}
 
 		if selectedCardMsg.PickedCardIndex >= len(currentPack) || selectedCardMsg.PickedCardIndex < 0 {
@@ -282,29 +237,15 @@ func (director *GameDirector) handleClientChooseCard(clientID string, msg *Messa
 		}
 
 		chosenCard := currentPack[selectedCardMsg.PickedCardIndex]
-		client.pool = append(client.pool, chosenCard)
 
 		currentPack = append(currentPack[:selectedCardMsg.PickedCardIndex], currentPack[selectedCardMsg.PickedCardIndex+1:]...)
 
-		playerSeat := director.getSeatByClientId(client.id)
-		var nextClientSeat int
-		if director.packNumber%2 == 0 {
-			// rounds go left, right, left ...
-			if playerSeat+1 >= len(director.Seats) {
-				nextClientSeat = 0
-			} else {
-				nextClientSeat = playerSeat + 1
-			}
-		} else {
-			if playerSeat-1 < 0 {
-				nextClientSeat = len(director.Seats) - 1
-			} else {
-				nextClientSeat = playerSeat - 1
-			}
-		}
+		playerSeat := director.getSeatByClientId(client.Id)
+		nextClientSeat := director.getSeatNumberForNextRound(playerSeat)
 		director.nextRoundPacks[nextClientSeat] = currentPack
 		director.roundPacks[director.packNumber].PlayerPacks[playerSeat] = nil
-		director.sendClientPool(client)
+		client.AddCardToPool(chosenCard)
+		client.WriteCurrentPool()
 	}
 	return nil
 }
@@ -318,11 +259,28 @@ func (director *GameDirector) haveAllClientsPickedCurrentRound() bool {
 	return true
 }
 
+func (director *GameDirector) getSeatNumberForNextRound(currentSeat int) int {
+	if director.packNumber%2 == 0 {
+		// rounds go left, right, left ...
+		if currentSeat+1 >= len(director.Seats) {
+			return 0
+		} else {
+			return currentSeat + 1
+		}
+	} else {
+		if currentSeat-1 < 0 {
+			return len(director.Seats) - 1
+		} else {
+			return currentSeat - 1
+		}
+	}
+}
+
 func (director *GameDirector) pickCardsForStallingClients() {
 	for seatNum, pp := range director.roundPacks[director.packNumber].PlayerPacks {
 		if pp != nil {
 
-			forcePick, err := json.Marshal(&ChooseCardJson{
+			forcePick, err := json.Marshal(&models.ChooseCardJson{
 				PickedCardIndex: 0,
 			})
 			if err != nil {
@@ -332,8 +290,8 @@ func (director *GameDirector) pickCardsForStallingClients() {
 			}
 
 			clientId := director.getClientIdBySeat(seatNum)
-			err = director.handleClientChooseCard(clientId, &Message{
-				Type: ChooseCard,
+			err = director.handleClientChooseCard(clientId, &models.Message{
+				Type: models.ChooseCard,
 				Data: string(forcePick),
 			})
 
@@ -342,18 +300,6 @@ func (director *GameDirector) pickCardsForStallingClients() {
 				director.shutdown()
 			}
 		}
-	}
-}
-
-func (director *GameDirector) sendClientPool(client *Client) {
-	jsonData, err := json.Marshal(client.pool)
-	if err != nil {
-		director.Error(err)
-	} else {
-		client.Write(&Message{
-			Type: PoolContent,
-			Data: string(jsonData),
-		})
 	}
 }
 
@@ -378,16 +324,23 @@ func (director *GameDirector) startGame() {
 				playerPack := CurrentRound.PlayerPacks[currentPlayer]
 				director.Seats[clientID] = currentPlayer
 
-				emp, _ := json.Marshal(&CardPack{
+
+				newPack := &models.CardPack{
 					SetName:    CurrentRound.SetAbbreviation,
 					Pack:       playerPack,
 					Round:      director.round,
 					PackNumber: director.packNumber + 1,
-					Timer:      int(director.getRoundTimer() / time.Second),
-				})
+				}
 
-				go client.Write(&Message{
-					Type: RoundContent,
+				if director.isTimerEnabled() {
+					newPack.Timer = int(director.getRoundTimer() / time.Second)
+				}
+
+
+				emp, _ := json.Marshal(newPack)
+
+				go client.Write(&models.Message{
+					Type: models.RoundContent,
 					Data: string(emp),
 				})
 
@@ -415,7 +368,7 @@ func (director *GameDirector) IsEndOfDraft() bool {
 
 func (director *GameDirector) startNextPack() {
 	director.packNumber += 1
-	logger := GetLogger()
+	logger := internal.GetLogger()
 	logger.Infow("Starting next pack", "pack_number", director.packNumber)
 }
 
@@ -429,16 +382,22 @@ func (director *GameDirector) startNextRound() {
 		client := director.Clients[clientID]
 		playerPack := CurrentPackRound.PlayerPacks[i]
 
-		emp, _ := json.Marshal(&CardPack{
+		newPack := &models.CardPack{
 			SetName:    CurrentPackRound.SetAbbreviation,
 			Pack:       playerPack,
 			Round:      director.round,
 			PackNumber: director.packNumber + 1,
-			Timer:      int(director.getRoundTimer()),
-		})
+		}
 
-		client.Write(&Message{
-			Type: RoundContent,
+		if director.isTimerEnabled() {
+			newPack.Timer = int(director.getRoundTimer() / time.Second)
+		}
+
+		emp, _ := json.Marshal(newPack)
+
+
+		client.Write(&models.Message{
+			Type: models.RoundContent,
 			Data: string(emp),
 		})
 
@@ -446,37 +405,49 @@ func (director *GameDirector) startNextRound() {
 	director.roundPicksTickerCh = director.startRoundPicksTicker()
 }
 
+func (director *GameDirector) isTimerEnabled() bool {
+	return director.roundTimerType != ""
+}
+
+func (director *GameDirector) isServerForcePickEnabled() bool {
+	return director.roundTimerServerForcePick == true
+}
+
 func (director *GameDirector) getRoundTimer() time.Duration {
 	var roundTime = 1 * time.Second
 	switch director.roundTimerType {
 	case "leisurely":
 		//'Leisurely - Starts @ 90s and decrements by 5s per pick'
-		roundTime = 90*time.Second - (5 * time.Second * (time.Duration(director.round-1)))
+		roundTime = 90*time.Second - (5 * time.Second * (time.Duration(director.round - 1)))
 		break
 	case "slow":
 		//'Slow - Starts @ 75s and decrements by 5s per pick'
-		roundTime = 75*time.Second - (5 * time.Second * (time.Duration(director.round-1)))
+		roundTime = 75*time.Second - (5 * time.Second * (time.Duration(director.round - 1)))
 		break
 	case "moderate":
 		//'Moderate - Starts @ 55s A happy medium between slow, and fast.'
-		roundTime = 55*time.Second - (5 * time.Second * (time.Duration(director.round-1)))
+		roundTime = 55*time.Second - (5 * time.Second * (time.Duration(director.round - 1)))
 		break
 	case "fast":
 		//'Fast - Starts @ 40s, based on official WOTC timing'
-		roundTime = 40*time.Second - (5 * time.Second * (time.Duration(director.round-1)))
+		roundTime = 40*time.Second - (5 * time.Second * (time.Duration(director.round - 1)))
 		break
 	}
 
-	if roundTime < 15*time.Second {
-		roundTime = 15 * time.Second
+	if roundTime < 3*time.Second {
+		roundTime = 3 * time.Second
 	}
 	return roundTime
 }
 
 func (director *GameDirector) startRoundPicksTicker() chan int {
 
-	logger := GetLogger()
-	roundTime := director.getRoundTimer()
+	logger := internal.GetLogger()
+	var roundTime time.Duration
+	if director.isTimerEnabled() {
+		roundTime = director.getRoundTimer()
+	}
+
 	ticks := 0
 	ticker := time.NewTicker(1 * time.Second)
 	pickIncrease := make(chan int, len(director.Seats))
@@ -486,20 +457,19 @@ func (director *GameDirector) startRoundPicksTicker() chan int {
 			select {
 			case <-ticker.C:
 				ticks += 1
-				if time.Duration(ticks)*time.Second == roundTime {
+				if director.isTimerEnabled() && director.isServerForcePickEnabled() && time.Duration(ticks)*time.Second == roundTime {
 					logger.Infow("Times Up! Forcing autopicks and ending round", "round", director.round)
 					director.startNextRoundCh <- true
 					close(pickIncrease)
 					ticker.Stop()
-					break
+					return
 				} else if picks == len(director.Seats) {
 					logger.Infow("all players have picked, ending round", "round", director.round)
 					director.startNextRoundCh <- true
 					close(pickIncrease)
 					ticker.Stop()
-					break
+					return
 				}
-				break
 			case <-pickIncrease:
 				picks += 1
 			}
@@ -529,7 +499,7 @@ func (director *GameDirector) shouldStartNewPack() bool {
 }
 
 func (director *GameDirector) pause() {
-	logger := GetLogger()
+	logger := internal.GetLogger()
 	logger.Infow("NO HOST! *PAUSING*.")
 	ticks := 0
 	ticker := time.NewTicker(5 * time.Second)
@@ -537,7 +507,7 @@ func (director *GameDirector) pause() {
 		select {
 		case <-ticker.C:
 			ticks += 1
-			if director.host != NoHostSentinel {
+			if director.host != models.NoHostSentinel {
 				logger.Infow("NEW HOST! *UNPAUSING*.")
 				ticker.Stop()
 				break
@@ -551,20 +521,23 @@ func (director *GameDirector) pause() {
 }
 
 func (director *GameDirector) promoteNewHost() {
-	nextHostId, err := getRandomClientId(director.Clients)
-	if err != nil {
-		director.host = NoHostSentinel
+	var nextHostId string
+	for k := range director.Clients {
+		nextHostId = k
+	}
+	if nextHostId == "" {
+		director.host = models.NoHostSentinel
 	} else {
 		director.host = nextHostId
-		director.sendHostMessage(&Message{
-			Type: HostChange,
+		director.sendHostMessage(&models.Message{
+			Type: models.HostChange,
 			Data: strconv.Itoa(1),
 		})
 	}
 }
 
 func (director *GameDirector) getGameResources() error {
-	logger := GetLogger()
+	logger := internal.GetLogger()
 	switch director.options.Type {
 	case game.DRAFT:
 		switch director.options.Mode {
@@ -586,21 +559,22 @@ func (director *GameDirector) getGameResources() error {
 				if err != nil {
 					logger.Fatalw("cannot get game options", "error", err.Error())
 				}
-				var boosters SetPacks
+				var boosters models.SetPacks
 				msg, err := ioutil.ReadAll(res.Body)
 				if err != nil {
 					panic(err)
 				}
 
 				if err := json.Unmarshal(msg, &boosters); err != nil {
+					logger.Fatalw("cannot decode booster json for packs", "set", setAbbrev)
 					panic(err)
 				}
 
-				playerPacks := make(map[int][]SetCard)
+				playerPacks := make(map[int][]models.SetCard)
 				for i, packs := range boosters.Packs {
 					playerPacks[i] = packs
 				}
-				director.roundPacks[i] = DraftRound{
+				director.roundPacks[i] = models.DraftRound{
 					SetAbbreviation: setAbbrev,
 					PlayerPacks:     playerPacks,
 				}
@@ -636,9 +610,8 @@ func (director *GameDirector) getGameResources() error {
 	return nil
 }
 
-
 func (director *GameDirector) Listen() {
-	logger := GetLogger()
+	logger := internal.GetLogger()
 	logger.Infow("Listening", "game", director.GameId, "port", director.Port)
 	// upgrade this connection to a WebSocket
 
@@ -649,33 +622,27 @@ func (director *GameDirector) Listen() {
 		select {
 		case c := <-director.addClientCh:
 			logger.Debugw("Added new client")
-			director.Clients[c.id] = c
+			director.Clients[c.Id] = c
 			logger.Debugw("Total", "clients", len(director.Clients))
-			go director.sendAll(&Message{
-				Type: NewPlayer,
+			go director.sendAll(&models.Message{
+				Type: models.NewPlayer,
 				Data: strconv.Itoa(len(director.Clients)),
 			})
 			go director.sendPastMessages(c)
-			go c.sendOldMessages()
 		case c := <-director.delClientCh:
-
-			clientID := c.id
+			clientID := c.Id
 			logger.Debugw("Removing client", "client", clientID)
 			delete(director.Clients, clientID)
 
-			if len(director.Clients) == 0 {
-				// director.pause()
-			} else {
-				if clientID == director.host {
-					director.promoteNewHost()
-				}
-				go director.SendAll(&Message{
-					Type: NewPlayer,
-					Data: strconv.Itoa(len(director.Clients)),
-				})
+			if clientID == director.host {
+				director.promoteNewHost()
 			}
+			go director.SendAll(&models.Message{
+				Type: models.NewPlayer,
+				Data: strconv.Itoa(len(director.Clients)),
+			})
 		case msg := <-director.sendAllCh:
-			if msg.Type != RoundContent {
+			if msg.Type != models.RoundContent {
 				logger.Debugw("Sending to all clients", "msg", msg)
 			}
 			director.messages = append(director.messages, msg)
@@ -686,7 +653,7 @@ func (director *GameDirector) Listen() {
 				director.round = 1
 			} else {
 				if !director.haveAllClientsPickedCurrentRound() {
-					director.pickCardsForStallingClients()
+						director.pickCardsForStallingClients()
 				}
 				director.round += 1
 				director.rotateCards()
@@ -698,12 +665,15 @@ func (director *GameDirector) Listen() {
 				director.startNextRound()
 			}
 		case err := <-director.errCh:
-			logger.Errorw("error occurred while sending messages to all clients", "error", err.Error())
+			logger.Errorw("error occurred", "error", err.Error())
 		case <-director.doneCh:
-			director.sendAll(&Message{
-				Type: GameEnd,
+			director.sendAll(&models.Message{
+				Type: models.GameEnd,
 				Data: strconv.Itoa(len(director.Clients)),
 			})
+			for _, c := range director.Clients {
+				c.Done()
+			}
 			logger.Infow("Ended Game.", "game", director.GameId)
 			os.Exit(0)
 		}
@@ -734,10 +704,9 @@ func getAPIUrlFromEnv(envKey string) string {
 	if ENV == "docker" {
 		return "http://api:8002"
 	} else {
-		return  "http://localhost/api"
+		return "http://localhost/api"
 	}
 }
-
 
 var ApiUri string
 

@@ -1,6 +1,7 @@
-package internal_test
+package director_test
 
 import (
+	"github.com/malexanderboyd/pwr9-godr4ft/internal/director"
 	"github.com/malexanderboyd/pwr9-godr4ft/internal/game"
 	"testing"
 )
@@ -12,7 +13,7 @@ func TestCreateNewGameDirector(t *testing.T) {
 	var gameId = "a_test_game"
 
 
-	d := main.NewGameDirector(mockOptions, port, gameId)
+	d := director.NewGameDirector(mockOptions, port, gameId)
 
 	if d.Port != port {
 		t.Errorf("Director's port must match provided port=%d", port)
@@ -23,18 +24,6 @@ func TestCreateNewGameDirector(t *testing.T) {
 	}
 
 }
-
-func TestGetGameOptions(t *testing.T) {
-
-	var mockUrl = "http://localhost/api/game/123"
-	gameOptions, err := main.GetGeneralGameOptions(mockUrl)
-	if err != nil {
-		t.Errorf(err)
-	}
-
-
-}
-
 
 
 

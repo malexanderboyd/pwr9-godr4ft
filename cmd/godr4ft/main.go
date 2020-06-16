@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/malexanderboyd/pwr9-godr4ft/internal"
+	"github.com/malexanderboyd/pwr9-godr4ft/internal/director"
 	"log"
 )
 
@@ -14,7 +14,7 @@ func main() {
 	gameId := flag.String("gameId", "", "Four byte url safe hex string")
 	flag.Parse()
 
-	internal.StartDraftServer(*gameId, *port)
+	director.StartDraftServer(*gameId, *port)
 }
 
 
