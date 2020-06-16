@@ -1,10 +1,4 @@
-package main
-
-import (
-	"errors"
-	"net/http"
-	"time"
-)
+package models
 
 // generated from https://mholt.github.io/json-to-go/
 type SetCard struct {
@@ -76,39 +70,4 @@ type SetCard struct {
 	Types                  []string      `json:"types"`
 	UUID                   string        `json:"uuid"`
 	Variations             []string      `json:"variations"`
-}
-
-type SetPacks struct {
-	Packs [][]SetCard
-}
-
-func getRandomClientId(m map[string]*Client) (string, error) {
-	for k := range m {
-		return k, nil
-	}
-	return "", errors.New("no clients available")
-}
-
-func createDraftClientIDCookie(clientID string) http.Header {
-	var clientIDHeader = http.Header{}
-	clientIdCookie := &http.Cookie{
-		Name:  DraftCookieName,
-		Value: clientID,
-		Path:  "/",
-		Expires: time.Now().Add(time.Minute * 30),
-	}
-	if v := clientIdCookie.String(); v != "" {
-		clientIDHeader.Add("Set-Cookie", v)
-	}
-	return clientIDHeader
-}
-
-func hasDraftClientIDCookie(r *http.Request) (bool, string) {
-	cookies := r.Cookies()
-	for _, cookie := range cookies {
-		if cookie.Name == DraftCookieName {
-			return true, cookie.Value
-		}
-	}
-	return false, ""
 }
